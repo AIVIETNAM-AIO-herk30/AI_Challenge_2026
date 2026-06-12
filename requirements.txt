@@ -1,0 +1,25 @@
+# --- Core Data Manipulation ---
+numpy==1.26.4
+pandas==2.2.1
+
+# --- Machine Learning & Deep Learning Frameworks ---
+torch==2.2.1
+torchvision==0.17.1
+torchaudio==2.2.1
+
+# --- Data Visualization---
+matplotlib==3.8.3
+seaborn==0.13.2
+
+# --- Image Processing ---
+opencv-python==4.9.0.80
+Pillow==10.2.0
+
+# --- Natural Language Processing ---
+# transformers==4.38.2
+# nltk==3.8.1
+
+# --- Utilities & Tools ---
+tqdm==4.66.2
+jupyter==1.0.0
+pyyaml==6.0.1
