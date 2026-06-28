@@ -1,0 +1,42 @@
+system:
+  device: cuda   # cuda | cpu
+  seed: 42
+
+agents:
+  ocr:
+    model: gemini-1.5-flash
+    max_concurrent: 4
+  asr:
+    model: large-v3
+    language: vi
+    max_concurrent: 2
+  visual:
+    model: ViT-SO400M-14-SigLIP-384
+    pretrained: webli
+    max_concurrent: 8
+
+dispatcher:
+  sla_latency_ms: 500
+
+classifier:
+  hidden_dim: 256
+  num_classes: 4   # text-only | ocr | asr | hybrid
+
+retrieval:
+  embed_dim: 1152  # SigLIP ViT-SO400M output dim
+  nlist: 256
+  nprobe: 32
+  top_k: 10
+
+train:
+  epochs: 30
+  batch_size: 64
+  lr: 3.0e-4
+  val_split: 0.1
+  checkpoint_dir: weights/
+
+data:
+  frame_fps: 1
+  video_dir: data/raw/videos/
+  query_file: data/raw/queries/queries.json
+  embed_dir: data/processed/embeddings/
