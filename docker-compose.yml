@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # --------------------------------------------------------
+  # TEXT DATABASE (Elasticsearch)
+  # --------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: aic2026_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - aic_network
+
+  # --------------------------------------------------------
+  # SEARCH ENGINE & UI (Team 2 - Streamlit)
+  # --------------------------------------------------------
+  web:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: aic2026_web
+    command: streamlit run src/ui/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      - elasticsearch
+    networks:
+      - aic_network
+
+volumes:
+  es_data:
+
+networks:
+  aic_network:
+    driver: bridge
