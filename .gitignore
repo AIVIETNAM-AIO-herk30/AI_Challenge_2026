@@ -23,8 +23,7 @@ env/
 
 # Project-specific Data & Checkpoints
 weights/
-data/processed/
-data/raw/videos/
+data/
 
 # Distribution / packaging
 build/
