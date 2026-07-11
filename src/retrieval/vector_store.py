@@ -1,112 +1,90 @@
 """
-FAISS vector store for video frame embeddings.
-Owner: Pham Viet Truong
+Turbovec-backed vector store for video frame embeddings.
 
-Phase 1 (docs/IMPLEMENTATION_PLAN.md §3, §7): brute-force exact search via
-IndexFlatIP wrapped in IndexIDMap, so embedding_id stays explicit and
-stable — no train() step required for this index type, which removes a
-whole class of "forgot to train before add" bugs. Swap in IndexIVFFlat
-(Phase 2, config.yaml already has nlist/nprobe pinned) once corpus size
-makes brute-force too slow; the IndexIDMap wrapper and the rest of this
-class's interface don't need to change.
+Turbovec's IdMapIndex only accepts uint64 handles, not the string frame_id
+used everywhere else in the pipeline (docs/API_CONTRACT.md's working
+convention: "{video_id}_{frame_index}"). This class keeps a JSON side-car
+mapping frame_id <-> handle, the same pattern turbovec's own bundled
+framework integrations (turbovec/langchain.py, llama_index.py) use for
+exactly this problem, and validates the two stay in sync on load via
+turbovec._persist.check_persisted_handles.
 
-Metadata schema (docs/IMPLEMENTATION_PLAN.md §7.2) — one row per keyframe,
-keyed by embedding_id, which must match the FAISS id exactly:
-  embedding_id, video_id, frame_idx, timestamp_sec, keyframe_path,
-  asr_text, ocr_text, source_type
+One store == one embedding space. SigLIP and BEiT-3 have different output
+dims, so the orchestrator holds two separate TurbovecStore instances
+rather than one store serving both.
 """
 
+import itertools
+import json
 from pathlib import Path
 
-import faiss
 import numpy as np
-import pandas as pd
+from turbovec import IdMapIndex
+from turbovec._persist import check_persisted_handles
 
 
-class VectorStore:
-    METADATA_COLUMNS = [
-        "embedding_id", "video_id", "frame_idx", "timestamp_sec",
-        "keyframe_path", "asr_text", "ocr_text", "source_type",
-    ]
+class TurbovecStore:
+    def __init__(self, dim: int, bit_width: int = 4):
+        self.dim = dim
+        self.bit_width = bit_width
+        self._index = IdMapIndex(dim=dim, bit_width=bit_width)
+        self._frame_id_to_handle: dict[str, int] = {}
+        self._handle_to_frame_id: dict[int, str] = {}
+        self._next_handle = itertools.count(1)
 
-    def __init__(self, embed_dim: int = 1152, nlist: int = 256, nprobe: int = 32):
-        self.embed_dim = embed_dim
-        self.nlist = nlist
-        self.nprobe = nprobe
-        self.index = faiss.IndexIDMap(faiss.IndexFlatIP(embed_dim))
-        self.metadata = (
-            pd.DataFrame(columns=self.METADATA_COLUMNS)
-            .astype({"embedding_id": "int64"})
-            .set_index("embedding_id", drop=False)
-        )
+    def insert(self, frame_id: str, vector: np.ndarray) -> None:
+        existing = self._frame_id_to_handle.get(frame_id)
+        if existing is not None:
+            self._index.remove(existing)
+            del self._handle_to_frame_id[existing]
 
-    def train(self, embeddings: np.ndarray) -> None:
-        """No-op for IndexFlatIP (Phase 1). Kept so callers written against
-        the Phase 2 IndexIVFFlat upgrade path don't need to change."""
-        return
+        handle = next(self._next_handle)
+        vec = np.ascontiguousarray(vector.reshape(1, -1).astype(np.float32))
+        self._index.add_with_ids(vec, np.array([handle], dtype=np.uint64))
+        self._frame_id_to_handle[frame_id] = handle
+        self._handle_to_frame_id[handle] = frame_id
 
-    def add(self, embeddings: np.ndarray, metadata: list[dict]) -> None:
-        if len(embeddings) != len(metadata):
-            raise ValueError("embeddings and metadata must be the same length")
-        if len(embeddings) == 0:
-            return
+    def insert_batch(self, frame_ids: list[str], vectors: np.ndarray) -> None:
+        if len(frame_ids) != len(vectors):
+            raise ValueError("frame_ids and vectors must be the same length")
+        for frame_id, vector in zip(frame_ids, vectors):
+            self.insert(frame_id, vector)
 
-        vecs = np.ascontiguousarray(embeddings.astype(np.float32))
-        faiss.normalize_L2(vecs)
-        ids = np.array([m["embedding_id"] for m in metadata], dtype=np.int64)
-        self.index.add_with_ids(vecs, ids)
-
-        new_rows = pd.DataFrame(metadata).astype({"embedding_id": "int64"}).set_index(
-            "embedding_id", drop=False
-        )
-        self.metadata = pd.concat([self.metadata, new_rows])
-
-    def search(self, query_vec: np.ndarray, top_k: int = 10) -> list[dict]:
-        query_vec = np.ascontiguousarray(query_vec.reshape(1, -1).astype(np.float32))
-        faiss.normalize_L2(query_vec)
-        scores, ids = self.index.search(query_vec, top_k)
+    def search(self, query_vec: np.ndarray, top_k: int = 10) -> list[tuple[str, float]]:
+        query = np.ascontiguousarray(query_vec.reshape(1, -1).astype(np.float32))
+        scores, handles = self._index.search(query, top_k)
 
         results = []
-        for score, idx in zip(scores[0], ids[0]):
-            if idx == -1:
-                continue
-            row = self.metadata.loc[int(idx)]
-            results.append(
-                {
-                    "video_id": str(row["video_id"]),
-                    "frame_idx": int(row["frame_idx"]),
-                    "timestamp_sec": float(row["timestamp_sec"]),
-                    "score": float(score),
-                }
-            )
+        for score, handle in zip(scores[0], handles[0]):
+            frame_id = self._handle_to_frame_id.get(int(handle))
+            if frame_id is None:
+                continue  # stale/unmapped handle, shouldn't happen but don't crash a search over it
+            results.append((frame_id, float(score)))
         return results
-
-    def get_text_fields(self, video_id: str, frame_idx: int) -> dict[str, str | None]:
-        """
-        Used by the Phase 1 optional hybrid rerank (docs/IMPLEMENTATION_PLAN.md
-        §6) to fetch stored asr_text/ocr_text for a candidate hit without
-        widening the frozen search() return shape (§7.3).
-        """
-        match = self.metadata[
-            (self.metadata["video_id"] == video_id) & (self.metadata["frame_idx"] == frame_idx)
-        ]
-        if match.empty:
-            return {"asr_text": None, "ocr_text": None}
-        row = match.iloc[0]
-        return {"asr_text": row.get("asr_text"), "ocr_text": row.get("ocr_text")}
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self.index, str(path / "index.faiss"))
-        self.metadata.to_parquet(path / "metadata.parquet", index=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._index.write(str(path.with_suffix(".tvim")))
+        sidecar = {
+            "dim": self.dim,
+            "bit_width": self.bit_width,
+            "frame_id_to_handle": self._frame_id_to_handle,
+        }
+        path.with_suffix(".sidecar.json").write_text(json.dumps(sidecar))
 
     def load(self, path: str | Path) -> None:
         path = Path(path)
-        self.index = faiss.read_index(str(path / "index.faiss"))
-        self.metadata = pd.read_parquet(path / "metadata.parquet").set_index(
-            "embedding_id", drop=False
-        )
+        self._index = IdMapIndex.load(str(path.with_suffix(".tvim")))
+        sidecar = json.loads(path.with_suffix(".sidecar.json").read_text())
+        self.dim = sidecar["dim"]
+        self.bit_width = sidecar["bit_width"]
+        self._frame_id_to_handle = {k: int(v) for k, v in sidecar["frame_id_to_handle"].items()}
+
+        check_persisted_handles(self._index, self._frame_id_to_handle.values(), what="frame")
+
+        self._handle_to_frame_id = {v: k for k, v in self._frame_id_to_handle.items()}
+        self._next_handle = itertools.count(max(self._frame_id_to_handle.values(), default=0) + 1)
 
     def __len__(self) -> int:
-        return self.index.ntotal
+        return len(self._index)

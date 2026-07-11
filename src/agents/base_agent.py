@@ -2,9 +2,9 @@
 Abstract base class for all specialized agents.
 Owner: Truong Hoang Thong
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3): process() always returns an
-AgentResult, even on failure — callers never need to catch exceptions from
-agents directly, they check `.success`.
+Contract (docs/API_CONTRACT.md's working convention): process() always
+returns an AgentResult, even on failure — callers never need to catch
+exceptions from agents directly, they check `.success`.
 """
 
 import asyncio

@@ -2,11 +2,11 @@
 name = "aic2026"
 version = "0.1.0"
 description = "AI Challenge 2026 Agentic Architecture"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "streamlit",
-    "elasticsearch",
-    "turbovec",
+    "elasticsearch>=8.13,<9",
+    "turbovec==0.8.0",
     "openai",
     "google-genai",
     "transnetv2 @ git+https://github.com/soCzech/TransNetV2.git",
@@ -18,7 +18,10 @@ dependencies = [
     "torchaudio",
     "transformers",
     "open_clip_torch",
+    "openai-whisper",
+    "numba>=0.60",
     "Pillow",
     "numpy",
-    "pandas"
+    "pandas",
+    "PyYAML"
 ]

@@ -1,8 +1,8 @@
 """
 ASR Agent using Whisper (local inference).
-Owner: Truong Hoang Thong
+Owner: Truong Hoang Thong / Team 1
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3):
+Contract (docs/API_CONTRACT.md's working convention):
   output = {"text": str, "segments": [{"start": float, "end": float, "text": str}]}
 
 Note (2026 dataset shift, docs/ARCHITECTURE.md §1): egocentric/wearable-camera
