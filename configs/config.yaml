@@ -1,42 +1,54 @@
 system:
   device: cuda   # cuda | cpu
+  precision: fp16   # applies to whisper/siglip/beit3 — RTX 4060 8GB budget, see docs/ARCHITECTURE.md
   seed: 42
 
+data:
+  video_dir: data/raw/videos/
+  keyframe_dir: data/keyframes/
+  shots_cache_dir: data/interim/shots/
+
+transnetv2:
+  model_dir: weights/transnetv2/   # fetch via scripts/fetch_transnetv2_weights.sh (pip's git install
+                                    # only pulls Git LFS pointer files, not the real weights)
+  threshold: 0.5
+  min_shot_duration_sec: 0.5
+  device: cpu   # forced off the GPU — tiny model, avoids TF grabbing VRAM PyTorch needs
+
 agents:
-  ocr:
-    model: gemini-1.5-flash
-    max_concurrent: 4
   asr:
     model: large-v3
     language: vi
     max_concurrent: 2
+  ocr:
+    model: gemini-3.5-flash
+    max_concurrent: 4
   visual:
-    model: ViT-SO400M-14-SigLIP-384
-    pretrained: webli
-    max_concurrent: 8
+    siglip:
+      model: ViT-SO400M-14-SigLIP-384
+      pretrained: webli
+      embed_dim: 1152
+      max_concurrent: 8
+    beit3:
+      # M0 spike finding: no HF/timm-loadable BEiT-3 checkpoint has a real
+      # text tower (see src/agents/beit3_agent.py docstring) — vision-only,
+      # loaded via timm, not transformers.
+      model: beit3_base_patch16_224.in22k_ft_in1k
+      embed_dim: 768
+      max_concurrent: 4
 
-dispatcher:
-  sla_latency_ms: 500
+turbovec:
+  index_dir: data/index/turbovec/
+  bit_width: 4
 
-classifier:
-  hidden_dim: 256
-  num_classes: 4   # text-only | ocr | asr | hybrid
+elasticsearch:
+  url: http://localhost:9200   # overridden by ELASTICSEARCH_URL env var
+  index_name: aic2026_frames
 
-retrieval:
-  embed_dim: 1152  # SigLIP ViT-SO400M output dim
-  nlist: 256
-  nprobe: 32
-  top_k: 10
-
-train:
-  epochs: 30
-  batch_size: 64
-  lr: 3.0e-4
-  val_split: 0.1
-  checkpoint_dir: weights/
-
-data:
-  frame_fps: 1
-  video_dir: data/raw/videos/
-  query_file: data/raw/queries/queries.json
-  embed_dir: data/processed/embeddings/
+# REMOVED: dispatcher.sla_latency_ms, classifier.*, retrieval.nlist/nprobe/embed_dim,
+# train.*, data.query_file/embed_dir — belonged to the abandoned M/M/c + FAISS design
+# (docs/ARCHITECTURE.md: "we have abandoned the legacy M/M/c queuing system"). src/inference.py,
+# src/eval.py, src/routing/*, src/model.py, src/train.py, src/data_loader.py still reference
+# the old FAISS VectorStore/these keys and will fail until Team 2 rewrites query-time
+# retrieval — expected, not Team 1's responsibility (see docs/IMPLEMENTATION_PLAN.md's
+# superseded design for the old shape of these keys if reviving any of that code).

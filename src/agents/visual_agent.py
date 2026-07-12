@@ -1,14 +1,18 @@
 """
 Visual Embedding Agent using SigLIP (via open_clip).
-Owner: Truong Hoang Thong
+Owner: Truong Hoang Thong / Team 1
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.1):
+Contract (docs/API_CONTRACT.md's working convention):
   - payload = {"image": path | PIL.Image}  -> image embedding
   - payload = {"text": str}                -> text embedding
   - both modes go through the SAME loaded model, so image and text
     embeddings land in one joint space (required for cosine/inner-product
-    search against the FAISS index built by Part 1).
+    search against the Turbovec index built by Team 1's indexing pipeline).
   - output: np.ndarray, shape (1152,), dtype float32, L2-normalized.
+
+Loaded in fp16 (RTX 4060 8GB VRAM budget, see docs/ARCHITECTURE.md) —
+resident weights ~0.85GB vs. ~1.7GB in fp32, leaving headroom for
+Whisper/BEiT-3 loaded alongside it.
 """
 
 from pathlib import Path
@@ -35,7 +39,7 @@ class VisualAgent(BaseAgent):
             model_name, pretrained=pretrained
         )
         self.tokenizer = open_clip.get_tokenizer(model_name)
-        self.model.to(self.device).eval()
+        self.model = self.model.half().to(self.device).eval()
 
     async def _run(self, payload: dict) -> np.ndarray:
         if "image" in payload:
@@ -46,7 +50,7 @@ class VisualAgent(BaseAgent):
 
     def _encode_image(self, image: str | Path | Image.Image) -> np.ndarray:
         img = image if isinstance(image, Image.Image) else Image.open(image).convert("RGB")
-        tensor = self.preprocess(img).unsqueeze(0).to(self.device)
+        tensor = self.preprocess(img).unsqueeze(0).half().to(self.device)
         with torch.no_grad():
             features = self.model.encode_image(tensor)
         return self._normalize(features)

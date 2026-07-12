@@ -1,28 +1,25 @@
 """
 OCR Agent using Gemini Vision API.
-Owner: Truong Hoang Thong
+Owner: Truong Hoang Thong / Team 1
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3):
-  output = extracted text string, "" if none found (never None — downstream
-  code should not have to null-check this).
+Contract (docs/API_CONTRACT.md's working convention): output = extracted
+text string, "" if none found (never None — downstream code should not
+have to null-check this; it also satisfies the Elasticsearch schema's
+asr_text/ocr_text typing directly).
 
-Phase 1 note (docs/IMPLEMENTATION_PLAN.md §3): calling this agent during
-indexing is OPTIONAL — visual embeddings drive most of the baseline
-accuracy, OCR mainly helps queries that reference on-screen text/signs.
-Skip it if API budget or time is tight; VideoIndexer already treats a
-missing OCRAgent as "no OCR for this run", not an error.
+Migrated from the old google-generativeai SDK (gemini-1.5-flash,
+GOOGLE_API_KEY) to google-genai (gemini-2.0-flash, GEMINI_API_KEY) — the
+old env var name didn't match what docker-compose.yml actually sets
+(GEMINI_API_KEY), so this agent silently failed to find its key under
+docker-compose.
 """
 
 import os
 
+from google import genai
 from PIL import Image
 
 from .base_agent import BaseAgent
-
-try:
-    import google.generativeai as genai
-except ImportError:  # pragma: no cover - optional dependency at runtime
-    genai = None
 
 
 class OCRAgent(BaseAgent):
@@ -32,17 +29,17 @@ class OCRAgent(BaseAgent):
         "If there is no visible text, return an empty string."
     )
 
-    def __init__(self, model_name: str = "gemini-1.5-flash", max_concurrent: int = 4):
+    def __init__(self, model_name: str = "gemini-3.5-flash", max_concurrent: int = 4):
         super().__init__("ocr", max_concurrent)
-        if genai is None:
-            raise RuntimeError("google-generativeai is not installed (see requirements.txt)")
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY environment variable is not set")
-        genai.configure(api_key=api_key)
-        self._model = genai.GenerativeModel(model_name)
+            raise RuntimeError("GEMINI_API_KEY environment variable is not set")
+        self._client = genai.Client(api_key=api_key)
+        self._model_name = model_name
 
     async def _run(self, payload) -> str:
         image = payload if isinstance(payload, Image.Image) else Image.open(payload)
-        response = self._model.generate_content([self._PROMPT, image])
+        response = self._client.models.generate_content(
+            model=self._model_name, contents=[self._PROMPT, image]
+        )
         return (response.text or "").strip()
