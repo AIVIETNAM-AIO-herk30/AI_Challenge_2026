@@ -91,6 +91,9 @@ thoại trong phiên Streamlit, và hiển thị các temporal candidate clips.
 Không thể chạy truy vấn end-to-end trong môi trường phát triển hiện tại vì
 chưa có package `turbovec`, vector index đã build, và Elasticsearch đang chạy.
 
+Các visual encoder cũng tự chọn dtype theo thiết bị: CUDA dùng `fp16`, còn CPU
+dùng `fp32`. Điều này cho phép chạy fallback CPU khi CUDA/NCCL không sẵn sàng.
+
 ## 5. Cách chạy khi đã chuẩn bị hạ tầng
 
 1. Cài dependencies của project và tải model/weights cần thiết.
