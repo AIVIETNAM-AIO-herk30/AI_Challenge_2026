@@ -1,18 +1,12 @@
-"""
-End-to-end inference: query -> classify -> dispatch -> retrieve video frames.
-Owner: Truong Hoang Thong
+"""End-to-end multimodal retrieval for the active Turbovec + Elasticsearch stack.
 
-Phase 1 (docs/IMPLEMENTATION_PLAN.md §6): classify the query with the
-existing rule-based classifier, embed it via VisualAgent (text mode)
-through the dispatcher, search the FAISS index built by Part 1, and — only
-for queries the classifier flags as OCR/ASR/HYBRID — rerank the top
-candidates against the *stored* asr_text/ocr_text metadata with BM25.
+At query time, a text query is embedded by SigLIP and searched against the
+offline-built Turbovec index.  The same query is sent to Elasticsearch for
+BM25 matches over OCR and ASR text.  Reciprocal-rank fusion combines the two
+rankings, then Elasticsearch hydrates frame IDs into the public result schema.
 
-We deliberately do NOT call live OCR/ASR agents on the query text itself —
-those agents expect an image/audio payload, not a string. dispatch() may
-still attempt this for OCR/ASR/HYBRID-classified queries (per AGENT_MAP)
-and fail harmlessly, since BaseAgent.process() catches the error; we only
-ever read the "visual" result out of dispatch()'s return value.
+OCR and ASR agents are indexing-time tools: they consume images and audio, not
+text queries.  They are therefore deliberately not instantiated here.
 """
 
 import argparse
@@ -20,12 +14,9 @@ import asyncio
 
 import yaml
 
-from .agents.asr_agent import ASRAgent
-from .agents.ocr_agent import OCRAgent
 from .agents.visual_agent import VisualAgent
-from .retrieval.vector_store import VectorStore
-from .routing.classifier import QueryType, rule_based_classify
-from .routing.dispatcher import DynamicDispatcher
+from .retrieval.es_store import ElasticsearchStore
+from .retrieval.vector_store import TurbovecStore
 
 # Process-lifetime cache so repeated search() calls (e.g. from the Part 2
 # eval harness, which calls this once per query) don't reload SigLIP /
@@ -33,96 +24,75 @@ from .routing.dispatcher import DynamicDispatcher
 # dict's identity, which stays stable as long as the caller loads
 # config.yaml once and reuses the dict, exactly how eval.py and the CLI
 # below both use it.
-_CONTEXT_CACHE: dict[int, tuple[dict, VectorStore]] = {}
+_CONTEXT_CACHE: dict[int, tuple[VisualAgent, TurbovecStore, ElasticsearchStore]] = {}
 
 
-def _build_agents(config: dict) -> dict:
-    agents_cfg = config["agents"]
-    visual_cfg = agents_cfg["visual"]
-    agents: dict = {
-        "visual": VisualAgent(
+def _get_context(config: dict) -> tuple[VisualAgent, TurbovecStore, ElasticsearchStore]:
+    key = id(config)
+    if key not in _CONTEXT_CACHE:
+        visual_cfg = config["agents"]["visual"]["siglip"]
+        visual_agent = VisualAgent(
             model_name=visual_cfg["model"],
             pretrained=visual_cfg["pretrained"],
             max_concurrent=visual_cfg.get("max_concurrent", 8),
         )
-    }
-    if "asr" in agents_cfg:
-        asr_cfg = agents_cfg["asr"]
-        agents["asr"] = ASRAgent(
-            model_name=asr_cfg["model"],
-            language=asr_cfg.get("language", "vi"),
-            max_concurrent=asr_cfg.get("max_concurrent", 2),
+        vector_cfg = config["turbovec"]
+        store = TurbovecStore(
+            dim=visual_cfg["embed_dim"], bit_width=vector_cfg.get("bit_width", 4)
         )
-    if "ocr" in agents_cfg:
-        ocr_cfg = agents_cfg["ocr"]
-        agents["ocr"] = OCRAgent(
-            model_name=ocr_cfg["model"],
-            max_concurrent=ocr_cfg.get("max_concurrent", 4),
+        store.load(f"{vector_cfg['index_dir'].rstrip('/')}/siglip")
+        es_cfg = config["elasticsearch"]
+        text_store = ElasticsearchStore(
+            url=es_cfg.get("url"), index_name=es_cfg["index_name"]
         )
-    return agents
-
-
-def _get_context(config: dict) -> tuple[dict, VectorStore]:
-    key = id(config)
-    if key not in _CONTEXT_CACHE:
-        agents = _build_agents(config)
-        store = VectorStore(
-            embed_dim=config["retrieval"]["embed_dim"],
-            nlist=config["retrieval"]["nlist"],
-            nprobe=config["retrieval"]["nprobe"],
-        )
-        store.load(config["data"]["embed_dir"])
-        _CONTEXT_CACHE[key] = (agents, store)
+        _CONTEXT_CACHE[key] = (visual_agent, store, text_store)
     return _CONTEXT_CACHE[key]
 
 
-def _hybrid_rerank(
-    query: str, candidates: list[dict], store: VectorStore, visual_weight: float = 0.7
-) -> list[dict]:
-    """Phase 1 optional step (docs/IMPLEMENTATION_PLAN.md §6): blend visual
-    similarity with a BM25 score against stored asr_text/ocr_text for
-    queries the classifier flagged as OCR/ASR/HYBRID."""
-    from rank_bm25 import BM25Okapi
-
-    docs = []
-    for c in candidates:
-        fields = store.get_text_fields(c["video_id"], c["frame_idx"])
-        text = " ".join(t for t in (fields["asr_text"], fields["ocr_text"]) if t)
-        docs.append(text.split() or [""])
-
-    bm25 = BM25Okapi(docs)
-    text_scores = bm25.get_scores(query.split())
-    max_text = max(text_scores) if max(text_scores) > 0 else 1.0
-
-    reranked = [
-        {**c, "score": visual_weight * c["score"] + (1 - visual_weight) * (t / max_text)}
-        for c, t in zip(candidates, text_scores)
-    ]
-    reranked.sort(key=lambda r: r["score"], reverse=True)
-    return reranked
+def _reciprocal_rank_fusion(
+    *rankings: list[tuple[str, float]], constant: int = 60
+) -> list[tuple[str, float]]:
+    """Fuse ranked frame-ID lists without comparing incompatible score scales."""
+    fused: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, (frame_id, _score) in enumerate(ranking, start=1):
+            fused[frame_id] = fused.get(frame_id, 0.0) + 1.0 / (constant + rank)
+    return sorted(fused.items(), key=lambda item: item[1], reverse=True)
 
 
 async def _search_async(query: str, config: dict, top_k: int) -> list[dict]:
-    agents, store = _get_context(config)
-    dispatcher = DynamicDispatcher(agents, sla_ms=config["dispatcher"]["sla_latency_ms"])
-    clf_output = rule_based_classify(query)
+    if top_k < 1:
+        return []
 
-    results = await dispatcher.dispatch({"text": query}, clf_output)
-    visual_result = next((r for r in results if r.agent_type == "visual"), None)
-    if visual_result is None:
-        raise RuntimeError("visual agent not configured — check configs/config.yaml")
+    visual_agent, vector_store, text_store = _get_context(config)
+    visual_result = await visual_agent.process({"text": query})
     if not visual_result.success:
         raise RuntimeError(f"query embedding failed: {visual_result.error}")
 
-    # Hybrid queries fetch a wider candidate pool so BM25 reranking has
-    # something to work with, then get trimmed back to top_k below.
-    fetch_k = top_k * 5 if clf_output.query_type != QueryType.TEXT_ONLY else top_k
-    candidates = store.search(visual_result.output, top_k=fetch_k)
+    fetch_k = top_k * 5
+    vector_hits = vector_store.search(visual_result.output, top_k=fetch_k)
+    text_hits = text_store.search_text(query, top_k=fetch_k)
+    fused_hits = _reciprocal_rank_fusion(vector_hits, text_hits)
+    metadata_by_frame_id = text_store.get_many_by_frame_ids(
+        [frame_id for frame_id, _score in fused_hits[:fetch_k]]
+    )
 
-    if clf_output.query_type != QueryType.TEXT_ONLY and candidates:
-        candidates = _hybrid_rerank(query, candidates, store)
-
-    return candidates[:top_k]
+    results = []
+    for frame_id, score in fused_hits:
+        metadata = metadata_by_frame_id.get(frame_id)
+        if metadata is None:
+            continue
+        results.append(
+            {
+                "video_id": metadata["video_id"],
+                "frame_idx": int(frame_id.rsplit("_", 1)[-1]),
+                "timestamp_sec": float(metadata["timestamp_seconds"]),
+                "score": score,
+            }
+        )
+        if len(results) == top_k:
+            break
+    return results
 
 
 def search(query: str, config: dict, top_k: int = 10) -> list[dict]:
