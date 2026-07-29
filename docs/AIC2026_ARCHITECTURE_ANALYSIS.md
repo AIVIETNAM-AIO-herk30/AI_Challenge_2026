@@ -1,9 +1,10 @@
 # Phân tích & Nâng cấp Kiến trúc cho AIC 2026
 
 > **Tài liệu này thay thế phần "Data Shift" và "Agentic Pipeline" trong `ARCHITECTURE.md`.**
-> Nguồn đối chiếu: `Tập-huấn-AIC-2026-Buổi-1.pptx.pdf` (tài liệu tập huấn chính thức), `2605.23274v1.pdf` (U-CESE), và ~20 paper/hệ thống 2025–2026 (danh sách nguồn ở §9).
+> Nguồn đối chiếu: **cả 3 buổi tập huấn chính thức AIC 2026** — Buổi 1 (bài toán & dữ liệu), Buổi 2 (ThS. Nguyễn Quang Thức — *Hệ thống tìm kiếm video*), Buổi 3 (Hồ Lê Minh Quân — *Kiến trúc Agentic AI*) — cùng `2605.23274v1.pdf` (U-CESE) và ~25 paper/hệ thống 2025–2026 (danh sách nguồn ở §11).
 >
 > Ngày phân tích: 2026-07-29 · Branch: `feat/team2`
+> **Rev. 2** — đối chiếu lại sau khi có Buổi 2 & Buổi 3. Thay đổi lớn nhất: bổ sung **§7 Hiển thị & Phản hồi người dùng** (bản Rev. 1 chỉ bàn 1/3 hệ thống theo định nghĩa của BTC), **§5.3 cascade early/late fusion**, **§6.6 ba nền tảng agent**, **§6.7 đường VQA kiểu STAR**.
 
 ---
 
@@ -15,10 +16,11 @@
 4. [Ma trận Độ khó vs Hiệu quả](#4-ma-trận-độ-khó-vs-hiệu-quả)
 5. [Kiến trúc mục tiêu AIC 2026](#5-kiến-trúc-mục-tiêu-aic-2026)
 6. [Tầng Agentic: 6 agent và lý do tồn tại](#6-tầng-agentic-6-agent-và-lý-do-tồn-tại)
-7. [Workflow & Orchestration bất đồng bộ](#7-workflow--orchestration-bất-đồng-bộ)
-8. [Lộ trình triển khai](#8-lộ-trình-triển-khai)
-9. [Hai điều cần cảnh báo mạnh nhất](#9-hai-điều-cần-cảnh-báo-mạnh-nhất)
-10. [Nguồn tham khảo](#10-nguồn-tham-khảo)
+7. [Hiển thị & Phản hồi người dùng — hai trụ cột bị bỏ quên](#7-hiển-thị--phản-hồi-người-dùng--hai-trụ-cột-bị-bỏ-quên)
+8. [Workflow & Orchestration bất đồng bộ](#8-workflow--orchestration-bất-đồng-bộ)
+9. [Lộ trình triển khai](#9-lộ-trình-triển-khai)
+10. [Ba điều cần cảnh báo mạnh nhất](#10-ba-điều-cần-cảnh-báo-mạnh-nhất)
+11. [Nguồn tham khảo](#11-nguồn-tham-khảo)
 
 ---
 
@@ -96,6 +98,38 @@ flowchart TD
 
 > **Điểm ăn điểm khác biệt:** KISC là bài toán mà chỉ hệ thống có agent hội thoại mới ghi điểm được. Đội nào bỏ qua KISC là tự bỏ một phần tư sân chơi.
 
+### 1.3 Phát hiện thứ hai (Buổi 2): hệ thống ≠ mô hình truy vấn
+
+Buổi 2 mở đầu bằng đúng một câu hỏi tu từ, và đó là câu hỏi dành cho mọi đội đang tối ưu encoder:
+
+> ### ❝ Hệ thống tìm kiếm video **chỉ cần mô hình rút trích đặc trưng mạnh** là đủ? ❞
+> — slide 2, Buổi 2
+
+Câu trả lời của BTC là **không**, và họ đưa ra sơ đồ hệ thống gồm **ba** khối ngang hàng:
+
+```mermaid
+flowchart LR
+  subgraph SYS["Hệ thống tìm kiếm video — định nghĩa của BTC (Buổi 2, slide 6)"]
+    direction LR
+    P1["<b>① Các mô hình truy vấn</b><br/>encoder · index · fusion"]
+    P2["<b>② Cơ chế hiển thị</b><br/>Video Browser"]
+    P3["<b>③ Phản hồi người dùng</b><br/>relevance feedback"]
+    P1 --> P2 --> P3
+    P3 -.->|"vòng lặp tương tác"| P1
+  end
+
+  Q["❓ Sẽ làm gì nếu<br/>mô hình truy vấn KHÔNG đủ tốt?"] --> ANS["➜ ② + ③<br/>bù lại phần mô hình thiếu"]
+
+  style P1 fill:#e8f4f8,stroke:#4a90a4
+  style P2 fill:#ffe0e0,stroke:#c00,stroke-width:3px
+  style P3 fill:#ffe0e0,stroke:#c00,stroke-width:3px
+  style ANS fill:#ffe0e0,stroke:#c00,stroke-width:2px
+```
+
+**Đây là lỗ hổng lớn nhất của bản Rev. 1 tài liệu này**: toàn bộ §3–§6 chỉ nói về khối ①. Khối ② và ③ được xử lý ở **§7 (mới)**.
+
+Vì sao điều này quan trọng hơn nó có vẻ: AIC/VBS/LSC chấm **điểm suy giảm theo thời gian** — trả lời đúng ở giây thứ 30 ăn nhiều điểm hơn trả lời đúng ở phút thứ 4. Thứ quyết định *thời gian tới đáp án* là ② và ③, không phải mAP của encoder. Một encoder tốt hơn 3% nhưng browser bắt người dùng cuộn 200 thumbnail gần trùng nhau sẽ **thua** một encoder yếu hơn với browser gom nhóm tốt.
+
 ---
 
 ## 2. Tổng hợp nghiên cứu (SOTA 12 tháng gần nhất)
@@ -163,7 +197,7 @@ flowchart TB
 | **RRF fusion** | Sàn đúng: chỉ dùng rank, không dính bệnh normalization, chạy tốt khi chưa tune. |
 | **LLM rewrite / expand / translate** | Vi ⇄ En là bắt buộc. Đã có sẵn `src/query_processing/llm_pipeline.py`. |
 | **Timestamp window clipping** | Primitive đúng. Trên lifelog còn **quan trọng hơn** vì không có shot boundary. |
-| **Team 1 / Team 2 split** | Đúng đường cắt: offline-indexing vs online-retrieval. Cũng chính là đường cắt bất đồng bộ (§7). |
+| **Team 1 / Team 2 split** | Đúng đường cắt: offline-indexing vs online-retrieval. Cũng chính là đường cắt bất đồng bộ (§8). |
 
 ### 3.3 Điểm gãy — xếp theo mức nghiêm trọng
 
@@ -370,7 +404,7 @@ Hiệu quả được chấm **riêng cho dữ liệu egocentric AIC 2026** — 
 | Clarification agent KISC (A6) | S | **Rất cao** | ✅ Ghi điểm ở task không ai khác chạm được |
 | Concept-expansion agent (A3, kiểu LLandMark) | S | Cao | ✅ Giải thẳng Case Study 1 |
 | Temporal-order verifier (A4) | M | Cao | ✅ Big Three #3 + Case Study 2 |
-| **Local eval harness + weight tuning** | M | **Rất cao** | ✅ **Xem §8 Phase 1** |
+| **Local eval harness + weight tuning** | M | **Rất cao** | ✅ **Xem §9 Phase 1** |
 | Egocentric encoder làm kênh ANN #2 | M | Cao | ✅ Nếu đủ GPU-hours |
 | Per-event VLM captioning (ReCap-style) | M | Cao | ⚠️ Làm, nhưng **phải chặn ngân sách** |
 | Learned/convex fusion thay RRF | M | TB | ⏸️ Chỉ sau khi có eval harness |
@@ -378,6 +412,28 @@ Hiệu quả được chấm **riêng cho dữ liệu egocentric AIC 2026** — 
 | RL query refinement (VideoSearch-R1) | XL | ? | ❌ **Bỏ.** Đề tài nghiên cứu, không phải bài thi |
 | Knowledge graph trên event | L | TB | ❌ **Bỏ ở v1.** Chỉ xem lại nếu temporal reasoning bế tắc |
 | Thêm Milvus / MongoDB | S | **Âm** | ❌ Turbovec + ES đã đủ. Đừng thêm store thứ ba |
+
+### 4.1 Bổ sung sau khi đối chiếu Buổi 2 & Buổi 3
+
+Nhóm này **rẻ bất thường** so với hiệu quả, vì phần lớn tái sử dụng thứ đã có trong index.
+
+| Thành phần | Nguồn | Độ khó | Hiệu quả | Kết luận |
+|---|---|---|---|---|
+| **Diversity cap: ≤2 event / video ở trang đầu** | B2 s.15 | **XS** | **Rất cao** | ✅ Chống 200 thumbnail gần trùng. ~5 dòng |
+| **Truy vấn bằng ảnh ("tìm ảnh giống ảnh này")** | B2 s.10, 16 | **XS** | **Rất cao** | ✅ Image tower SigLIP **đã có sẵn** — không thêm model nào |
+| **Prompt ensembling cho text tower** | B2 s.44 | **XS** | Cao | ✅ Mean-pool embedding của K cách diễn đạt từ A2. Miễn phí |
+| **ES `_count` dry-run → nới/siết ràng buộc** | B3 s.21–25 | **XS** | **Rất cao** | ✅ Diệt lỗi "filter quá chặt ⇒ 0 kết quả". ~5 ms/lần |
+| **Semantic memory bền: cache concept ra đĩa** | B3 s.17 | XS | Cao | ✅ Ấm dần trong suốt vòng thi |
+| **Concept chips: khám phá ⇄ khai phá** | B2 s.20–21 | S | **Rất cao** | ✅ BTC mô tả *đúng* A6, nhưng ở tầng UI và **hai chiều** |
+| **Rocchio feedback: cập nhật vector truy vấn** | B2 s.19 · MemoriEase 3.0 | S | **Cao** | ✅ 5 dòng numpy, không train lại gì |
+| **Episodic memory cho KISC (turn log)** | B3 s.16 | S | **Cao** | ✅ KISC không chạy được nếu thiếu |
+| **Zoom tool (crop + OCR/VLM ở full-res)** | B3 s.30 (STAR) | S | **Cao** | ✅ Cách duy nhất đọc được nhãn giá / hoá đơn / màn hình |
+| **Chế độ truy vấn đa khung hình (temporal)** | B2 s.13 | M | Cao | ✅ Nâng A4 từ "verifier" thành **chế độ truy xuất** |
+| **ToT-lite: A2 sinh 2–3 plan, chạy SONG SONG** | B3 s.14 | S | TB | ⏸️ Latency ~0 vì retriever vốn đã song song. Thử sau eval harness |
+| **Action detection (VideoMAE / ego action)** | B1 s.35 | M | TB–Cao | ⏸️ BTC có liệt kê. Sau Phase 2, nếu verb query còn yếu |
+| **Early-fusion grounding (GLIP/UNINEXT) thay A5** | B2 s.35–36 | L | TB | ⏸️ VLM judge đơn giản hơn, gần hiệu quả. Chỉ đổi nếu attribute binding vẫn hỏng |
+| **Sketch → ảnh → truy vấn** | B2 s.10 | M | Thấp | ❌ Di sản VBS. AIC 2026 không có UI này trong đề |
+| **HippoRAG / graph memory** | B3 s.18 | L | TB | ❌ "Đồ thị" của lifelog chính là **trục thời gian**, đã index rồi |
 
 ---
 
@@ -456,6 +512,49 @@ flowchart TB
 >
 > Đây chính là thứ giữ cho một hệ thống agentic vẫn nằm trong giới hạn thời gian của vòng thi.
 
+### 5.3 Vì sao kiến trúc phải là CASCADE — khung early/late fusion của BTC
+
+Buổi 2 dành 10 slide cho đúng một sự đánh đổi, và nó là bộ khung lý thuyết chuẩn cho toàn bộ §5.1:
+
+| | **Late-fusion** | **Bước trung gian** | **Early-fusion** |
+|---|---|---|---|
+| Mô hình tiêu biểu (BTC nêu) | CLIP, OWL-ViT · *(ta: SigLIP2, Ego)* | — | GLIP, UNINEXT · *(ta: VLM judge)* |
+| Cách hoạt động | Rút trích đặc trưng **độc lập** từng modality, so cosine | Sau khi fusion còn thêm các bước tính toán | Ảnh + ngôn ngữ **bổ trợ nhau ngay trong lúc rút trích** |
+| Ưu (nguyên văn) | *"Tiết kiệm thời gian lúc truy vấn do dữ liệu ảnh đã được rút trích đặc trưng sẵn"* | *"Càng phức tạp cho ra độ chính xác cao"* | *"Tăng tính lý giải… tạo liên kết chính xác giữa ngôn ngữ và hình ảnh (visual grounding)"* |
+| Nhược (nguyên văn) | *"Rất khó kiểm soát kết quả trả về do phụ thuộc hoàn toàn vào sức mạnh của mô hình rút trích"* | *"Đổi lại thời gian chạy lâu"* | *"Cần chạy lại toàn bộ mô hình với mỗi truy vấn khác nhau"* |
+| BTC nói dùng khi nào | *"Khi truy vấn trên **dữ liệu lớn**"* | — | *"Phù hợp với **số lượng dữ liệu thấp** — các bước **cuối cùng** của quá trình truy vấn"* |
+
+```mermaid
+flowchart LR
+  C0["Toàn corpus<br/><b>~10⁷ frame</b>"] -->|"LATE-FUSION<br/>ANN trên vector tiền tính<br/>⏱️ ~100 ms"| C1["<b>10³–10⁴</b><br/>candidate"]
+  C1 -->|"TRUNG GIAN<br/>RRF + term/attr match<br/>+ temporal grouping<br/>⏱️ ~100 ms"| C2["<b>~50</b><br/>event"]
+  C2 -->|"EARLY-FUSION<br/>VLM cross-encoder judge<br/>ảnh ⊗ text cùng lúc<br/>⏱️ 1–2 s"| C3["<b>Top-5</b><br/>đã xác thực"]
+
+  N0["❌ Không đủ 'kiểm soát'<br/>nhưng là thứ DUY NHẤT<br/>chạy nổi ở quy mô này"] -.-> C0
+  N3["✅ Đủ 'lý giải' &<br/>attribute binding<br/>nhưng chỉ chạy nổi<br/>trên 50 mẫu"] -.-> C3
+
+  style C0 fill:#e8f4f8,stroke:#4a90a4
+  style C2 fill:#fff4e6,stroke:#d4820a
+  style C3 fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+```
+
+> **Kết luận đối chiếu:** tầng **A5 VLM rerank top-50** trong §5.1 không phải ý tưởng thêm vào cho sang — nó chính là **"các bước cuối cùng của quá trình truy vấn"** mà BTC dạy ở slide 36. Baseline AIC 2025 dừng ở late-fusion + RRF, tức là **thiếu hẳn nhánh phải của sơ đồ này**.
+>
+> Hệ quả về độ khó: `Mức độ phức tạp ở bước cuối cùng phụ thuộc vào độ lớn dữ liệu` (slide 43). Cho nên **top-50 là con số phải tune**, không phải hằng số — corpus càng lớn thì càng phải để cascade lọc sâu hơn trước khi trả cho early-fusion.
+
+#### 5.3.1 Một món miễn phí rơi ra từ đây: prompt ensembling
+
+Slide 44 trích Radford (CLIP): *"zero-shot performance can be significantly improved by customizing the prompt text to each task."*
+
+A2 **vốn đã** sinh ra nhiều cách diễn đạt thị giác cho một truy vấn (mảng `visual[]` ở §6.2). Thay vì chọn một cái:
+
+```python
+# ponytail: mean-pool đã đủ; đổi sang weighted pool nếu eval harness cho thấy có lợi
+z = normalize(np.mean([siglip_text(p) for p in plan["visual"]], axis=0))
+```
+
+Không thêm model, không thêm latency đáng kể (K lần text tower, mỗi lần <5 ms), và nó ép SigLIP về đúng phân bố prompt mà nó được train. Với dữ liệu egocentric, hãy đưa vào ensemble ít nhất một template góc nhìn thứ nhất: `"a first-person view of {}"`, `"a photo taken from wearable glasses showing {}"`.
+
 ---
 
 ## 6. Tầng Agentic: 6 agent và lý do tồn tại
@@ -470,6 +569,11 @@ flowchart TB
 | **A4 · Temporal Verifier** | Kiểm tra thứ tự sự kiện + **prior-event re-query** | Big Three #3 + Case Study 2 | — |
 | **A5 · Rerank / Judge** | VLM cross-encoder trên **top-50**, có **hard veto** | Attribute binding (Case Study 3, biên 0.018 = nhiễu) | MAVIS veto (rút gọn) |
 | **A6 · Clarification** | Chọn facet có **entropy cao nhất** → hỏi 1 câu | **Chính là bài toán KISC** | MemoriEase 3.0, V-Agent chat agent |
+
+> **Đối chiếu Buổi 2 & 3 (Rev. 2):**
+> · **A3 chính là "semantic memory"** theo phân loại của Buổi 3 (§6.6.1) — hãy bền hoá cache ra đĩa, đừng để nó chết theo process.
+> · **A6 mới chỉ làm một nửa việc.** Buổi 2 slide 20–21 yêu cầu gợi ý concept theo **hai chiều**: *khai phá* (giảm bất định — đúng cái A6 đang làm) **và** *khám phá* (mở rộng phạm vi khi encoder trượt). Nửa còn lại ở §7.2.
+> · **A2 nên có một bước world-model dry-run** trước khi cam kết plan — §6.6.2.
 
 ### 6.2 A2 — Query Planner output schema
 
@@ -584,11 +688,206 @@ sequenceDiagram
     A6-->>U: ✅ Top-5 kết quả + timestamp
 ```
 
+### 6.6 Đối chiếu với ba nền tảng Agent của BTC (Buổi 3)
+
+Buổi 3 định nghĩa AI Agent qua đúng ba nền tảng: **Reasoning · Memory · Planning**. Dưới đây là chỗ đứng của 6 agent trên bản đồ đó — và hai chỗ hệ thống đang **thiếu**.
+
+```mermaid
+flowchart TB
+  subgraph F["Ba nền tảng — Buổi 3"]
+    direction LR
+    R["<b>Reasoning</b><br/>IO · CoT · ToT"]
+    M["<b>Memory</b><br/>Episodic · Semantic · Procedural"]
+    P["<b>Planning</b><br/>Greedy · Tree search · World model"]
+  end
+
+  R --> RA["A1 = IO (phân loại nhanh, System 1)<br/>A2 = CoT (phân rã ràng buộc, System 2)<br/>A5 = CoT có grounding<br/>❌ ToT: mỗi nhánh = 1 vòng truy xuất đầy đủ<br/>⟹ không có ngân sách trong vòng thi tính giờ"]
+  M --> MA["<b>Semantic</b> = cache A3 concept→mô tả thị giác ✅<br/><b>Episodic</b> = turn log KISC ⚠️ <b>CÒN THIẾU</b><br/><b>Procedural</b> = registry công cụ truy xuất ✅"]
+  P --> PA["Hiện tại: <b>Greedy</b> — A2 sinh 1 plan rồi chạy<br/>⟹ 'tham lam, thiển cận' theo đúng slide 21<br/>Nâng cấp: <b>World model</b> — xem 6.6.2 ⭐"]
+
+  style MA fill:#fff4e6,stroke:#d4820a
+  style PA fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+```
+
+#### 6.6.1 Memory — đặt đúng tên cho thứ đã có, và bù thứ còn thiếu
+
+| Loại (BTC) | Định nghĩa | Trong hệ thống này | Trạng thái |
+|---|---|---|---|
+| **Semantic** — *lưu trữ kiến thức*, ghi bằng suy luận LLM | "lính chì" → *"người đứng mặc quân phục đỏ, khuy vàng, mũ lông đen cao"* | Cache của **A3**. **Ghi ra đĩa**, không chỉ in-memory | ✅ có, cần bền hoá |
+| **Episodic** — *lưu trữ trải nghiệm*, ghi **append-only**, đọc bằng **điểm heuristic** | Log từng lượt KISC: `(turn, câu hỏi đã hỏi, câu trả lời, ràng buộc tích luỹ, snapshot candidate)` | **Chưa có** — `orchestrator.py` hiện không giữ state qua lượt | ⚠️ **thiếu** |
+| **Procedural** — *lưu trữ kỹ năng* | Registry công cụ: retriever nào tồn tại, tham số gì, chi phí bao nhiêu | Danh sách tool của Executor (SnapMind gọi là *component registry*) | ✅ có |
+
+> **Vì sao episodic memory là bắt buộc, không phải tuỳ chọn:** KISC = nhiều lượt. Không có append-only turn log thì lượt 2 không biết lượt 1 đã hỏi gì — agent sẽ hỏi lại đúng câu đã hỏi, và ràng buộc người dùng cung cấp ở lượt 1 bị mất. Đây là **một bảng, ba cột**, không cần framework memory nào cả.
+
+#### 6.6.2 ⭐ Planning — world model của bài toán truy xuất là MIỄN PHÍ
+
+Slide 21 Buổi 3 nêu ba kiểu planning, và để ngỏ một câu hỏi:
+
+> *Greedy:* ✅ nhanh, dễ · ⚠️ tham lam, thiển cận
+> *Tree search:* ✅ khám phá hệ thống · ⚠️ hành động không đảo ngược, không an toàn, chậm
+> *World model:* ✅ nhanh hơn, an toàn hơn, đảo ngược được · ⚠️ **"Làm thế nào để có được world model?"**
+
+**Trong bài toán truy xuất, câu hỏi đó có lời giải tầm thường: chính cái index là world model.** Một lệnh `_count` trên Elasticsearch mô phỏng được kết quả của một plan mà **không** phải thực thi nó — ~5 ms, hoàn toàn đảo ngược được.
+
+```mermaid
+flowchart TD
+  A2["A2 sinh constraints"] --> CNT["ES <b>_count</b> với filter cứng<br/>time · place · objects<br/>⏱️ ~5 ms — KHÔNG lấy document"]
+  CNT --> D{"n = ?"}
+  D -->|"n = 0<br/>❌ over-constrained"| REL["<b>NỚI</b> theo thứ tự ưu tiên ngược:<br/>bỏ ràng buộc yếu nhất trước<br/>(audio_evt → place → tod)"]
+  D -->|"n > 100k<br/>❌ under-constrained"| TIG["<b>SIẾT</b>: bật thêm filter<br/>hoặc thu hẹp cửa sổ thời gian"]
+  D -->|"10² ≤ n ≤ 10⁵<br/>✅"| GO["Thực thi plan"]
+  REL --> CNT
+  TIG --> CNT
+
+  style CNT fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+  style GO fill:#d4f8d4,stroke:#2a7a2a
+```
+
+Chi phí: tối đa 3 vòng × 5 ms = **15 ms**, nằm gọn trong ngân sách latency §8.5. Lợi ích: xoá sạch chế độ hỏng tệ nhất và phổ biến nhất của mọi hệ thống có metadata filter — **người dùng gõ ràng buộc hơi lệch, hệ thống trả về 0 kết quả, và mất 2 phút mới nhận ra**. Giới hạn vòng lặp ở 3 để không biến planner thành vòng lặp vô hạn.
+
+### 6.7 Đường VQA — mô hình STAR mà BTC nêu
+
+Buổi 3 slide 30 mô tả kiến trúc agent cho VideoQA: **LLM Planner điều phối bộ công cụ qua khung STAR (Spatiotemporal Reasoning)**, với action space **luân phiên giữa công cụ Thời gian và công cụ Không gian**. Bản Rev. 1 xử lý VQA quá sơ sài (chỉ "retrieve evidence → VLM answer"). Bổ sung:
+
+```mermaid
+flowchart TD
+  VQ["Câu hỏi VQA"] --> RET["Truy xuất evidence<br/>(dùng lại toàn bộ cascade §5.3)"]
+  RET --> VFD["<b>Visible Frame Dictionary</b><br/>tập frame đang 'nhìn thấy'<br/>+ timestamp"]
+  VFD --> PLAN{"LLM Planner<br/>còn thiếu thông tin gì?"}
+
+  PLAN -->|"thiếu ngữ cảnh<br/>trước/sau"| TT["<b>Công cụ THỜI GIAN</b><br/>• mở rộng cửa sổ ±Δt<br/>• chọn thêm keyframe<br/>• nhảy tới event kề"]
+  PLAN -->|"thiếu chi tiết<br/>trong khung hình"| ST["<b>Công cụ KHÔNG GIAN</b><br/>• object detect<br/>• OCR vùng crop<br/>• <b>ZOOM</b> ⭐"]
+
+  TT --> VFD
+  ST --> VFD
+  PLAN -->|"đủ · hoặc chạm 3 vòng"| ANS["Sinh câu trả lời<br/>+ timestamp làm bằng chứng"]
+
+  style ST fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+  style ANS fill:#d4f8d4,stroke:#2a7a2a
+```
+
+**⭐ Công cụ ZOOM là món đáng giá nhất và hiện đang thiếu.** Frame đã nằm trên đĩa ở độ phân giải gốc; detector đã cho sẵn bounding box. Zoom = crop theo box rồi chạy lại OCR/VLM **ở full-res**. Trên video egocentric đây là **cách duy nhất** đọc được nhãn giá, hoá đơn, biển hiệu, màn hình điện thoại — những thứ mà VQA hay hỏi và mà một frame downscale 384×384 đã xoá sạch thông tin.
+
+> **Chặn vòng lặp:** tối đa **3 vòng công cụ**, hết thì trả lời bằng những gì đang có. Không có trần này, agent VQA sẽ đốt hết đồng hồ vào một câu hỏi. Đây vẫn đúng nguyên tắc §5.2 — planner chạy O(1) theo *lượt hỏi*, không phải O(N) theo frame.
+
 ---
 
-## 7. Workflow & Orchestration bất đồng bộ
+## 7. Hiển thị & Phản hồi người dùng — hai trụ cột bị bỏ quên
 
-### 7.1 Lỗi kinh điển cần tránh
+> Toàn bộ §7 là phần **bổ sung Rev. 2**, dựng từ Buổi 2. Đây là khối ② và ③ trong sơ đồ §1.3.
+
+### 7.1 Bài toán hiển thị
+
+BTC nêu đúng hai triệu chứng (slide 15):
+
+| Triệu chứng | Nguyên nhân trên dữ liệu egocentric | Cách chữa |
+|---|---|---|
+| *"Các frame gần giống nhau trong một video"* | Camera đeo đứng yên 10 phút ⇒ 600 frame gần **trùng khít** | Đơn vị hiển thị là **EVENT**, không phải frame (§3.3 ①) — cộng thêm **diversity cap** |
+| *"Số lượng video có liên quan quá nhiều"* | Một concept (bếp, đường phố) xuất hiện mỗi ngày | **Cap ≤2 event / video** ở trang đầu; xem thêm bằng "mở rộng video này" |
+
+Và một câu hỏi thiết kế (slide 15) mà đa số đội bỏ trống:
+
+> ❝ Chúng ta sẽ hiển thị gì khi người dùng **không biết bắt đầu từ đâu**? ❞
+
+```mermaid
+flowchart TB
+  subgraph BROWSE["Video Browser — 3 chế độ"]
+    direction TB
+    M1["<b>① Kết quả xếp hạng</b><br/>1 thumbnail / EVENT<br/>≤2 event / video<br/>hover = scrub trong event"]
+    M2["<b>② Ảnh liên quan</b> — <i>'more like this'</i><br/>bấm 1 thumbnail ⇒ ANN từ<br/>vector ảnh ĐÃ CÓ TRONG INDEX<br/>💡 0 model mới, 0 chi phí offline"]
+    M3["<b>③ Cold start</b> — không biết bắt đầu từ đâu<br/>Timeline theo ngày + bản đồ<br/>+ 1 đại diện / cụm place_category<br/>⟵ khớp Buổi 1 slide 33"]
+    M1 <--> M2
+    M1 <--> M3
+  end
+  style M2 fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+  style M3 fill:#d4f8d4,stroke:#2a7a2a
+```
+
+**Chế độ ② rẻ đến mức vô lý.** Index đã chứa vector ảnh của mọi keyframe (Turbovec). "Ảnh liên quan" = một truy vấn ANN với vector đó làm query, thay vì embedding của text. Không thêm mô hình, không thêm bước offline nào — chỉ là một endpoint mới. BTC minh hoạ đúng cơ chế này ở slide 16 (*Ảnh truy vấn → Ảnh liên quan*) và trong hệ thống VISIONE'23 / vitrivr.
+
+> **Đây cũng chính là câu trả lời cho slide 10** — *"thay đổi phương thức truy vấn để liên kết chặt chẽ hơn"*. Khi text không diễn tả nổi (kết cấu, bố cục, sắc thái màu), ảnh diễn tả được.
+
+### 7.2 Phản hồi người dùng — Khám phá ⇄ Khai phá
+
+Slide 19 đặt ra yêu cầu cân bằng **hai chiều ngược nhau**, và slide 20–21 nói rõ nó phải hiện ra dưới dạng **gợi ý concept**:
+
+| Chiều | BTC định nghĩa | Mục tiêu toán học | Cách tính |
+|---|---|---|---|
+| **Khám phá** (exploration) | *"hiển thị thông tin ít liên quan nhằm mở rộng phạm vi tìm kiếm"* — bù cho cách diễn đạt thiếu chặt của người dùng và encoder yếu | **Tăng recall** khi encoder trượt | Concept **anh em** từ A3: cùng ngữ cảnh nhưng chưa xuất hiện trong candidate set |
+| **Khai phá** (exploitation) | *"hiển thị thông tin liên quan cao nhằm tách bạch các video giống nhau"* | **Giảm entropy** của candidate set | Chính là **A6** — facet có entropy cao nhất (§6.3) |
+
+```mermaid
+flowchart LR
+  Q["Truy vấn:<br/>'tôi đang nấu ăn'"] --> RES["Candidate set"]
+
+  RES --> EXPL["<b>Chips KHÁM PHÁ</b><br/>(mở rộng)<br/>+ thái rau · + rửa bát<br/>+ bếp nhà hàng · + nướng BBQ"]
+  RES --> EXPT["<b>Chips KHAI PHÁ</b><br/>(thu hẹp — max entropy)<br/>trong nhà / ngoài trời?<br/>sáng / tối?<br/>có người khác / một mình?"]
+
+  EXPL -->|"bấm ⇒ OR thêm vào visual[]"| Q
+  EXPT -->|"bấm ⇒ AND thêm filter"| Q
+
+  RES --> FB["👍 / 👎 trên từng thumbnail"]
+  FB -->|"Rocchio"| VUP["q' = α·q + β·mean(pos) − γ·mean(neg)<br/>rồi ANN lại"]
+  VUP --> Q
+
+  style EXPL fill:#e8f4f8,stroke:#4a90a4
+  style EXPT fill:#ffe0e0,stroke:#c00
+  style VUP fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+```
+
+**Rocchio — 5 dòng, không train gì:**
+
+```python
+def rocchio(q, pos_vecs, neg_vecs, a=1.0, b=0.75, c=0.25):
+    """Cập nhật vector truy vấn từ 👍/👎. Vector đã L2-normalized sẵn trong index."""
+    q2 = a * q
+    if len(pos_vecs): q2 = q2 + b * np.mean(pos_vecs, axis=0)
+    if len(neg_vecs): q2 = q2 - c * np.mean(neg_vecs, axis=0)
+    return q2 / np.linalg.norm(q2)
+    # ponytail: γ nhỏ hơn β có chủ đích — negative feedback nhiễu hơn positive.
+    # Nếu eval harness cho thấy 👎 đáng tin, kéo c lên 0.5.
+```
+
+MemoriEase 3.0 (LSC'25) — hệ thống mà chính Buổi 3 slide 31 đưa ra làm mẫu — mô tả action space của nó gồm đúng bước này: *"tính toán lại vector trọng số từ phản hồi người dùng"*. Đây là prior art trực tiếp, không phải sáng chế.
+
+### 7.3 Truy vấn đa khung hình — chỗ mô hình ảnh đơn bó tay
+
+Slide 13 nêu vấn đề bằng một ví dụ cụ thể:
+
+> ❝ Làm sao để liên kết giữa các khung hình khi sử dụng các mô hình trên ảnh đơn? ❞
+> *Text query: "A slow pan up from a canyon, **static shots of a bridge** and redrock mountain."*
+
+SigLIP nhìn từng frame độc lập; không frame nào chứa cả chuỗi. Cách chữa **không cần model mới** — dùng lại trục thời gian đã index:
+
+```mermaid
+flowchart LR
+  QQ["Truy vấn có nhiều cảnh<br/>hoặc có thứ tự"] --> SPL["A2 tách thành<br/>sub-query có THỨ TỰ<br/>q₁ → q₂ → q₃"]
+  SPL --> P1["ANN q₁ ⇒ hits₁"]
+  SPL --> P2["ANN q₂ ⇒ hits₂"]
+  SPL --> P3["ANN q₃ ⇒ hits₃"]
+  P1 & P2 & P3 --> JOIN["<b>Temporal join</b><br/>cùng video_id ∧<br/>t₁ &lt; t₂ &lt; t₃ ∧<br/>tᵢ₊₁ − tᵢ ≤ Δ<br/><i>numpy, không LLM</i>"]
+  JOIN --> SC["Điểm = Σ rank-score<br/>− phạt độ lệch thời gian"]
+  style JOIN fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
+```
+
+Đây chính là **A4 được nâng cấp**: ở Rev. 1 nó chỉ *lọc* kết quả vi phạm thứ tự (post-hoc verifier); ở đây nó trở thành **chế độ truy xuất** khi `temporal_order` không rỗng. Nó cũng là câu trả lời trực tiếp cho **Big Three #3** (Buổi 1 slide 31: *"cởi mũ trước khi vào phòng"* vs *"vào phòng rồi mới cởi mũ"*) — hai câu này có cùng túi từ khoá và chỉ khác nhau ở dấu của `t₁ − t₂`.
+
+### 7.4 Đánh đổi mà BTC yêu cầu cân bằng
+
+Slide 9 nêu tam giác: **tốc độ thuật toán ⇄ sức mạnh thuật toán ⇄ chi phí hệ thống** (mốc quy mô họ đưa: V3C1 = 1000 giờ video).
+
+| | Chọn gì | Vì sao chấp nhận được |
+|---|---|---|
+| **Tốc độ** | Late-fusion ANN cho toàn corpus | Không có lựa chọn nào khác chạy nổi ở 10⁷ frame |
+| **Sức mạnh** | Early-fusion chỉ trên top-50 | Trả tiền cho độ chính xác đúng chỗ nó đổi thành điểm |
+| **Chi phí** | Gate OCR, caption theo event, cost cap cứng | Chênh lệch **$200 vs $5000** tiền API (§8.2 quy tắc 3) |
+| **Khi cả ba đều thua** | ② hiển thị + ③ phản hồi | Đây là lý do tồn tại của §7 — *"sẽ làm gì nếu mô hình truy vấn không đủ tốt?"* |
+
+---
+
+## 8. Workflow & Orchestration bất đồng bộ
+
+### 8.1 Lỗi kinh điển cần tránh
 
 ```mermaid
 flowchart LR
@@ -612,7 +911,7 @@ flowchart TB
   style GOOD fill:#e8f8e8,stroke:#2a7a2a
 ```
 
-### 7.2 6 quy tắc bất đồng bộ bắt buộc
+### 8.2 6 quy tắc bất đồng bộ bắt buộc
 
 | # | Quy tắc | Vì sao |
 |---|---|---|
@@ -623,7 +922,7 @@ flowchart TB
 | 5 | **Backpressure bằng bounded queue.** `asyncio.Queue(maxsize=N)` giữa các stage | Queue vô hạn biến 1 consumer chậm thành OOM sau 3 tiếng |
 | 6 | **Join muộn.** Mỗi stage ghi `(video_id, t, payload)` độc lập; pass cuối merge thành event doc | Stage ghi chéo vào record của nhau = race condition + không resume được |
 
-### 7.3 DAG offline với barrier
+### 8.3 DAG offline với barrier
 
 ```mermaid
 flowchart TB
@@ -662,7 +961,7 @@ flowchart TB
     style MAN fill:#e8e8ff,stroke:#4040c0,stroke-width:2px
 ```
 
-### 7.4 Đừng xây orchestration framework
+### 8.4 Đừng xây orchestration framework
 
 > **Rung 3 của thang lười: stdlib đã đủ.**
 >
@@ -671,7 +970,7 @@ flowchart TB
 > **~50 dòng code, thay thế hoàn toàn Airflow / Prefect / Celery ở quy mô này.**
 > Chỉ với tới Ray khi thực sự có hardware nhiều node.
 
-### 7.5 Online — ngân sách latency
+### 8.5 Online — ngân sách latency
 
 ```mermaid
 gantt
@@ -720,7 +1019,7 @@ gantt
 
 2. **Agent chạy theo LƯỢT, không theo CANDIDATE.** A2 gọi 1 lần. A5 gọi 1 lần trên batch 50. Nếu bạn thấy mình gọi 1 LLM call / candidate → thiết kế đã sai.
 
-### 7.6 Bảng chốt: chỗ nào đặt agent, chỗ nào không
+### 8.6 Bảng chốt: chỗ nào đặt agent, chỗ nào không
 
 | Bước pipeline | Agent? | Lý do |
 |---|---|---|
@@ -737,10 +1036,15 @@ gantt
 | Rerank top-50 | **✅ A5** | Phán đoán grounded, fine-grained |
 | Hỏi lại làm rõ | **✅ A6** | **Chính là bài toán KISC** |
 | Sinh câu trả lời VQA | **VLM** | Generation trên evidence đã truy xuất |
+| **Dry-run `_count` + nới/siết ràng buộc** | **✅ A2** (vòng ≤3) | World model miễn phí. Quyết định *"plan này có khả thi không"* — §6.6.2 |
+| **Chọn công cụ VQA (thời gian ⇄ không gian)** | **✅ Planner** (vòng ≤3) | Đúng khung STAR của BTC — §6.7 |
+| **Xếp hạng lại sau feedback (Rocchio)** | **Không** | Đại số vector thuần. LLM ở đây chỉ thêm độ trễ — §7.2 |
+| **Sinh chip khám phá / khai phá** | **✅ A3 + A6** | Khám phá cần tri thức thế giới (A3); khai phá là entropy (A6) |
+| **Gom nhóm & diversity cap khi hiển thị** | **Không** | Luật cứng: 1 thumbnail/event, ≤2 event/video — §7.1 |
 
 ---
 
-## 8. Lộ trình triển khai
+## 9. Lộ trình triển khai
 
 ```mermaid
 flowchart LR
@@ -754,14 +1058,22 @@ flowchart LR
 
     P4["<b>Phase 4</b><br/>Khác biệt hoá<br/>———<br/>• A6 entropy clarification<br/>• A4 temporal verifier<br/>———<br/>🏆 <b>Đây là chỗ<br/>ăn điểm KISC</b>"]
 
+    P2B["<b>Phase 2b</b> — SONG SONG với P2<br/>Browser & Feedback<br/>———<br/>• 1 thumbnail / EVENT<br/>• diversity cap ≤2/video<br/>• 'ảnh liên quan' (image query)<br/>• chip khám phá ⇄ khai phá<br/>• Rocchio 👍/👎<br/>———<br/>👤 người khác làm (frontend)<br/>🚫 KHÔNG tranh GPU với P2"]
+
     P0 --> P1 --> P2 --> P3 --> P4
+    P1 --> P2B --> P3
 
     style P0 fill:#d4f8d4,stroke:#2a7a2a,stroke-width:3px
     style P1 fill:#fff0b3,stroke:#c8a800,stroke-width:4px
+    style P2B fill:#e0f0ff,stroke:#0066cc,stroke-width:3px
     style P4 fill:#ffe0e0,stroke:#c00,stroke-width:3px
 ```
 
-### ⚠️ Phase 1 — Đừng bỏ qua
+**Phase 2b tách riêng có chủ đích.** Nó là khối ② + ③ (§7), chạy trên frontend, **không đụng tới GPU hay pipeline offline** — nên nó chạy song song Phase 2 mà không tranh tài nguyên với ai. Đây là hạng mục dễ bị hoãn nhất và cũng là hạng mục đổi thành điểm nhanh nhất, vì AIC chấm theo thời gian tới đáp án.
+
+Ba món XS nên nhét vào Phase 0 luôn vì gần như không tốn công: **prompt ensembling** (§5.3.1), **ES `_count` dry-run** (§6.6.2), **bền hoá cache A3** (§6.6.1).
+
+### 9.1 ⚠️ Phase 1 — Đừng bỏ qua
 
 50–100 query gán nhãn tay trên sample index, chấm R@1 / R@5 / R@100 và MRR, chạy được bằng **một lệnh**.
 
@@ -769,7 +1081,7 @@ Không có nó, **mọi** trọng số fusion, **mọi** ngưỡng, **mọi** c�
 
 > Đây là hạng mục ROI cao nhất toàn bộ kế hoạch, và cũng chính là hạng mục các đội **luôn luôn bỏ qua**.
 
-### Đã cân nhắc và loại bỏ
+### 9.2 Đã cân nhắc và loại bỏ
 
 | Bỏ | Lý do |
 |---|---|
@@ -780,7 +1092,7 @@ Không có nó, **mọi** trọng số fusion, **mọi** ngưỡng, **mọi** c�
 
 ---
 
-## 9. Hai điều cần cảnh báo mạnh nhất
+## 10. Ba điều cần cảnh báo mạnh nhất
 
 > ### 🔴 1. `docs/ARCHITECTURE.md:62` khẳng định TransNet V2 xử lý được "shaky egocentric footage" — **KHÔNG ĐÚNG.**
 > Nó phát hiện shot boundary do người dựng tạo ra, thứ mà video egocentric **không hề có**.
@@ -789,9 +1101,14 @@ Không có nó, **mọi** trọng số fusion, **mọi** ngưỡng, **mọi** c�
 > ### 🟠 2. Tune trọng số trên dữ liệu news AIC 2025 sẽ cho ra bộ weight SAI cho 2026.
 > Bootstrap đường ống trên nó thì được; tune trọng số phải làm trên dữ liệu egocentric.
 
+> ### 🟠 3. Đừng để hệ thống chỉ có 1/3 số khối mà BTC định nghĩa. *(bổ sung Rev. 2)*
+> Buổi 2 mở đầu bằng đúng câu hỏi này: *"Hệ thống tìm kiếm video chỉ cần mô hình rút trích đặc trưng mạnh là đủ?"*
+> Bản Rev. 1 của chính tài liệu này đã mắc lỗi đó — 100% nội dung nằm ở khối ① mô hình truy vấn.
+> **Cơ chế hiển thị** và **phản hồi người dùng** không phải phần "làm nốt nếu còn thời gian"; chúng là thứ quyết định *thời gian tới đáp án*, và AIC chấm điểm suy giảm theo thời gian. Xem §7.
+
 ---
 
-## 10. Nguồn tham khảo
+## 11. Nguồn tham khảo
 
 **Hệ thống AIC / VBS / LSC**
 - [U-CESE — Unified Clip-based Event Search Engine, AIC HCMC 2025](https://arxiv.org/abs/2605.23274)
@@ -819,7 +1136,26 @@ Không có nó, **mọi** trọng số fusion, **mọi** ngưỡng, **mọi** c�
 - [EgoCVR — Egocentric Benchmark for Fine-Grained Composed Video Retrieval (ECCV 2024)](https://github.com/ExplainableML/EgoCVR)
 - [Object-Shot Enhanced Grounding Network for Egocentric Video](https://arxiv.org/pdf/2505.04270)
 
+**Video browser & tương tác người dùng** *(bổ sung Rev. 2 — nền cho §7)*
+- [vitrivr — Open-Source Multimedia Retrieval Stack](https://vitrivr.org/) *(BTC nêu ở Buổi 2 slide 11)*
+- [VISIONE — Video Search System, VBS](https://github.com/ffalchi/it.cnr.isti.visione) *(BTC nêu ở Buổi 2 slide 17)*
+- [Rocchio Algorithm — Relevance Feedback (IR textbook, Stanford NLP)](https://nlp.stanford.edu/IR-book/html/htmledition/rocchio-algorithm-for-relevance-feedback-1.html)
+- [Learning Transferable Visual Models From Natural Language Supervision (CLIP — prompt engineering & ensembling, §3.1.4)](https://arxiv.org/abs/2103.00020)
+- [GLIP — Grounded Language-Image Pre-training (early-fusion, CVPR 2022)](https://arxiv.org/abs/2112.03857)
+- [UNINEXT — Universal Instance Perception as Object Discovery and Retrieval (CVPR 2023)](https://arxiv.org/abs/2303.06674)
+
+**Nền tảng Agent** *(bổ sung Rev. 2 — nền cho §6.6–§6.7)*
+- [Tree of Thoughts — Deliberate Problem Solving with LLMs (NeurIPS 2023)](https://arxiv.org/abs/2305.10601)
+- [Generative Agents — Interactive Simulacra of Human Behavior (episodic memory)](https://arxiv.org/abs/2304.03442)
+- [Voyager — Open-Ended Embodied Agent with LLMs (procedural memory / skill library)](https://arxiv.org/abs/2305.16291)
+- [HippoRAG — Neurobiologically Inspired Long-Term Memory for LLMs](https://arxiv.org/abs/2405.14831) *(BTC nêu ở Buổi 3 slide 18 — đánh giá: chưa cần, xem §4.1)*
+- [Mind2Web — Towards a Generalist Agent for the Web (NeurIPS 2024)](https://arxiv.org/abs/2306.06070)
+- [OSWorld — Benchmarking Multimodal Agents in Real Computer Environments](https://arxiv.org/abs/2404.07972)
+- [MemoriEase 2.0 — Conversational Lifelog Retrieval, LSC'24](https://dl.acm.org/doi/10.1145/3643489.3661116)
+
 **Tài liệu nội bộ**
-- `Tập-huấn-AIC-2026-Buổi-1.pptx.pdf` — tài liệu tập huấn chính thức AIC 2026
+- `Tập huấn AIC 2026 - Buổi 1.pptx.pdf` — bài toán, dữ liệu, Big Three, tiền xử lý lifelog
+- `Tập huấn AIC 2026 - Buổi 2.pdf` — ThS. Nguyễn Quang Thức, *Hệ thống tìm kiếm video*: ba trụ cột, early/late fusion, hiển thị & phản hồi
+- `Tập huấn AIC 2026 - Buổi 3.pdf` — Hồ Lê Minh Quân, *Kiến trúc Agentic AI*: Reasoning · Memory · Planning, ứng dụng VideoQA & lifelog QA
 - `docs/ARCHITECTURE.md` — kiến trúc hiện tại (cần cập nhật theo §3.3 ①)
-- `src/agents/orchestrator.py` — ReAct skeleton đã có, cần sửa `_is_ambiguous()` theo §6.3
+- `src/agents/orchestrator.py` — ReAct skeleton đã có, cần sửa `_is_ambiguous()` theo §6.3 và bổ sung episodic memory theo §6.6.1
