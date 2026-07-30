@@ -2,7 +2,7 @@
 Abstract base class for all specialized agents.
 Owner: Truong Hoang Thong
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3): process() always returns an
+Contract (IMPLEMENTATION_PLAN.md §2.3): process() always returns an
 AgentResult, even on failure — callers never need to catch exceptions from
 agents directly, they check `.success`.
 """

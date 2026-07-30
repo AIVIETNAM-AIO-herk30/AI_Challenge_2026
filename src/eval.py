@@ -2,11 +2,11 @@
 Evaluation harness for retrieval accuracy.
 Owner: Pham Huu Huy
 
-This is Part 2 of docs/IMPLEMENTATION_PLAN.md — the thing that turns
+This is Part 2 of IMPLEMENTATION_PLAN.md — the thing that turns
 Part 4's search() output into a number the team can actually optimize
 against. There was no existing stub for this; it's a new module.
 
-Ground-truth schema (docs/IMPLEMENTATION_PLAN.md §2.5) — NOT the same file
+Ground-truth schema (IMPLEMENTATION_PLAN.md §2.5) — NOT the same file
 as data/raw/queries/queries.json (that one trains the query classifier,
 see src/data_loader.py):
 

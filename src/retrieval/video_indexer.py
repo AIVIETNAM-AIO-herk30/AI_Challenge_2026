@@ -2,7 +2,7 @@
 Video frame sampling and indexing pipeline.
 Owner: Pham Viet Truong
 
-Phase 1 (docs/IMPLEMENTATION_PLAN.md §3): fixed-FPS frame sampling via
+Phase 1 (IMPLEMENTATION_PLAN.md §3): fixed-FPS frame sampling via
 decord, visual embedding through VisualAgent, optional ASR/OCR enrichment,
 written into VectorStore per the metadata.parquet schema (§7.2).
 
@@ -129,7 +129,7 @@ async def _build_and_run(config: dict) -> None:
         pretrained=agents_cfg["visual"]["pretrained"],
         max_concurrent=agents_cfg["visual"].get("max_concurrent", 8),
     )
-    # ASR/OCR are optional for the Phase 1 baseline (docs/IMPLEMENTATION_PLAN.md
+    # ASR/OCR are optional for the Phase 1 baseline (IMPLEMENTATION_PLAN.md
     # §3) — comment out the relevant block in configs/config.yaml's `agents:`
     # section to skip either one and speed up indexing.
     asr = (

@@ -2,7 +2,7 @@
 Visual Embedding Agent using SigLIP (via open_clip).
 Owner: Truong Hoang Thong
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.1):
+Contract (IMPLEMENTATION_PLAN.md §2.1):
   - payload = {"image": path | PIL.Image}  -> image embedding
   - payload = {"text": str}                -> text embedding
   - both modes go through the SAME loaded model, so image and text
