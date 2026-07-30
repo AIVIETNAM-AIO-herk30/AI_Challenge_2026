@@ -28,7 +28,7 @@ The codebase has **3 functional clusters** identified by static analysis:
 | Cluster | Role |
 |:---|:---|
 | **Agents (A1-A6)** | Multi-agent coordination for reasoning, memory, and planning. |
-| **Retrieval** | Video indexing, TurboVec store, Elasticsearch store. |
+| **Retrieval** | Video indexing pipeline, TurboVec store, Elasticsearch store. |
 | **UI & Feedback** | Relevance feedback, diversity caps, and concept exploration. |
 
 ### 🧩 A. The 6-Agent System (Team 2)
@@ -56,17 +56,198 @@ The online retrieval system is driven by six specialized agents:
 
 We have implemented a modern **Agent-guided Multimodal Pipeline** with **Temporal Event Reasoning** and a **Spatiotemporal Reasoning (STAR)** framework for VQA.
 
-### Offline Indexing (Team 1)
+### Master Architecture Pipeline Diagram
+
+```mermaid
+flowchart TD
+    subgraph Team1 ["🗄️ Team 1: Data Preparation & Indexing (Offline)"]
+        direction TB
+        RAW["📹 AIC 2026 Videos"]
+        RAW --> FF["⚙️ ffmpeg Fan-Out Decode\n(CPU Pool)"]
+        FF -->|"Keyframe images"| SigLIP["🖼️ VisualAgent\n(SigLIP — 1152-d)"]
+        FF -->|"Keyframe images"| BEiT3["🧠 BEiT3Agent\n(BEiT-3 — 768-d)"]
+        FF -->|"Keyframe images"| OCR["📝 OCRAgent\n(Gemini 2.0/3.5 Flash)"]
+        FF -->|"Raw Audio Track"| ASR["🎤 ASRAgent\n(Whisper large-v3)"]
+        FF -->|"Raw Audio Track"| AUD["🔊 Audio Event Tagger\n(BEATs / CLAP)"]
+
+        SigLIP --> TVS[("💾 FAISS/TurboVec\nSigLIP Index")]
+        BEiT3  --> TVB[("💾 FAISS/TurboVec\nBEiT-3 Index")]
+
+        SigLIP ==> BAR{{"🚧 BARRIER\nEmbedding-Drift Segmentation"}}
+        BAR --> Metadata["📍 Metadata Extractor\n(Date, Hour, Place, GPS)"]
+
+        ASR --> ES[("🔎 Elasticsearch Store\nasr_text, ocr_text, date,\nhour_of_day, place_category,\naudio_events")]
+        OCR --> ES
+        AUD --> ES
+        Metadata --> ES
+    end
+
+    subgraph Team2 ["🧠 Team 2: Multi-Agent Retrieval & Serving (Online)"]
+        direction TB
+        TQ["👤 User Query"]
+        TQ --> A1["🔀 A1 Task Router\n(KIS / AVS / VQA / KISC)"]
+        A1 --> A2["📋 A2 Query Planner\n(Constraints JSON + Weights)"]
+        A2 --> A3["💡 A3 Concept Grounding\n(Semantic Memory Cache)"]
+
+        A2 -.->|"ES _count Dry-run"| ES
+
+        A3 --> EX["⚡ Execution Engine\n(asyncio.gather)"]
+        EX --> TVS
+        EX --> TVB
+        EX --> ES
+
+        TVS --> RRF["📊 Reciprocal Rank Fusion (RRF)\n+ Score Normalisation"]
+        TVB --> RRF
+        ES --> RRF
+
+        RRF --> A4["⏱️ A4 Temporal Verifier\n(Sequence Order & Prior Events)"]
+        A4 --> A5["🔬 A5 VLM Reranker / Judge\n(Top-50 Cross-Encoder with Hard Veto)"]
+        A5 --> FINAL["🏆 Final Ranked Video Events"]
+
+        RRF --> A6["❓ A6 Clarification Agent\n(KISC Max-Entropy Facet Prompt)"]
+        A6 -.->|"Clarifying Question"| TQ
+    end
+```
+
+### 3.1 Offline Indexing Workflow (Team 1)
 1. **Fan-Out Decoding:** `ffmpeg` decodes frames (CPU pool) and audio track once.
 2. **Audio Event Tagging:** `BEATs` or `CLAP` extracts audio events (e.g., "traffic", "cooking") to provide strong prior location/activity cues where ASR fails on egocentric video.
 3. **Embedding-Drift Segmentation:** Replaces traditional shot boundary detection. We segment unedited scenes by measuring drift between pre-computed visual embeddings (Similar Shot Linkage).
 4. **Metadata Indexing:** Each event is stored in Elasticsearch with critical pruning filters: `date`, `hour_of_day`, `place_category`, and `audio_events`.
 
-### Online Retrieval & VQA (Team 2)
-1. **Agentic Query Planning:** `A2` expands the query and dynamically routes weights between visual, OCR, and audio. It uses a **World Model Dry-run** (calling ES `_count`) to iteratively relax or tighten constraints before execution.
-2. **Parallel Search:** The system queries Elasticsearch (Metadata + Text) and TurboVec (Visual) simultaneously using `asyncio.gather` with tool-specific timeouts.
-3. **KISC Entropy Clarification:** For conversational queries, `A6` calculates the entropy of facets (e.g., indoor/outdoor) across the candidate set. It asks the user a question about the highest-entropy facet to divide the search space in half.
-4. **VQA STAR Framework:** For Video QA, a Planner orchestrates **Temporal tools** (expanding the time window) and **Spatial tools** (including a **ZOOM tool** to crop and OCR regions at full-resolution).
+#### Offline Asynchronous Pipeline DAG
+```mermaid
+flowchart TB
+    START(["Video Queue"]) --> DEC["[CPU Pool] ffmpeg decode\nframes @1-2fps + audio.wav"]
+    DEC --> Q1[/"Queue frames (maxsize=N)"/]
+    DEC --> Q2[/"Queue audio (maxsize=N)"/]
+
+    Q1 --> GEMB["[GPU] SigLIP2 + BEiT-3 Embed"]
+    Q1 --> GDET["[GPU] Object / Scene Detector"]
+    Q1 --> CTXT["[CPU] Text Detector Gate"]
+
+    Q2 --> GASR["[GPU] WhisperX ASR"]
+    Q2 --> GAUD["[GPU] BEATs Audio Event Tagging"]
+
+    GEMB ==> BAR{{"🚧 BARRIER\nEmbedding-Drift Segmentation\n+ Similar Shot Linkage"}}
+    BAR ==> REP["Select 1 Representative Frame / EVENT"]
+    REP --> ACAP["[API] Gemini Event Captioning"]
+    CTXT -->|"Frames with text (~15%)"| AOCR["[API] Gemini OCR"]
+
+    GDET --> JOIN["Late Join by (video_id, t)\n→ Event Documents"]
+    GASR --> JOIN
+    GAUD --> JOIN
+    ACAP --> JOIN
+    AOCR --> JOIN
+    BAR  --> JOIN
+
+    JOIN --> W1[("Turbovec Index")]
+    JOIN --> W2[("Elasticsearch Store")]
+```
+
+---
+
+### 3.2 Online Retrieval & Execution Flows (Team 2)
+
+#### Sequence Diagram: Full KIS Query Execution
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant A1 as A1 Router
+    participant A2 as A2 Planner
+    participant A3 as A3 Grounding
+    participant EX as Executor
+    participant ES as Elasticsearch
+    participant TV as Turbovec
+    participant A4 as A4 Temporal
+    participant A5 as A5 VLM Judge
+
+    U->>A1: "Find when I saw the toy soldier in the mall"
+    A1->>A2: task = KIS
+    A2->>A3: concept = "toy soldier"
+    A3-->>A2: "standing figure, red military uniform, gold buttons, tall black bearskin hat"
+    A2->>EX: constraints JSON (weights: visual 0.7, audio 0.15, ocr 0.1)
+    par Parallel Search (asyncio.gather)
+        EX->>ES: metadata prefilter (place_category = indoor/retail)
+        EX->>TV: ANN siglip query
+        EX->>TV: ANN ego-encoder query
+        EX->>ES: BM25 caption/ocr search
+    end
+    EX->>EX: RRF fusion & temporal grouping into EVENTS
+    EX->>A4: candidate events
+    A4-->>EX: filter sequence violations
+    EX->>A5: top-50 candidate events
+    A5-->>U: Render top results (Streamed)
+```
+
+#### Sequence Diagram: KISC Conversational Multi-Turn Search
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant A1 as A1 Router
+    participant A6 as A6 Clarify
+    participant EX as Executor
+    participant ST as Session State
+
+    U->>A1: "Find when I met an old friend last week"
+    A1->>ST: task = KISC, save turn 1
+    A1->>EX: broad search
+    EX-->>A6: 4,800 candidate events
+    A6->>A6: Calculate facet entropy (indoor/outdoor = 0.99 MAX)
+    A6-->>U: "Was that meeting indoors or outdoors? Was your friend male or female?"
+    U->>ST: "Outdoor coffee shop, he was wearing a blue shirt"
+    ST->>EX: merged constraints (time=last week, place=outdoor/cafe, shirt=blue)
+    EX-->>A6: 37 candidate events (low entropy)
+    A6-->>U: Top-5 ranked events with timestamps
+```
+
+---
+
+### 3.3 Video QA (VQA) STAR Framework
+For Video QA, the LLM Planner coordinates temporal and spatial tools in a loop:
+
+```mermaid
+flowchart TD
+    VQ["VQA Question"] --> RET["Retrieve Evidence\n(Cascaded Search)"]
+    RET --> VFD["Visible Frame Dictionary\n(Active frame set + timestamps)"]
+    VFD --> PLAN{"LLM Planner\nWhat evidence is missing?"}
+
+    PLAN -->|"Missing before/after context"| TT["⏱️ Temporal Tools\n• Expand ±dt window\n• Select keyframes\n• Jump to adjacent event"]
+    PLAN -->|"Missing fine detail in frame"| ST["🔍 Spatial Tools\n• Object detection\n• Bounding box crop\n• ZOOM Tool (Full-res OCR)"]
+
+    TT --> VFD
+    ST --> VFD
+    PLAN -->|"Sufficient evidence or max 3 loops"| ANS["Generate Answer\n+ Timestamp Proof"]
+```
+
+---
+
+### 3.4 Online Latency Budget
+
+```mermaid
+gantt
+    title Online Single-Turn Query Latency Budget
+    dateFormat  X
+    axisFormat  %L ms
+
+    section Agent Orchestration
+    A1+A2+A3 single LLM call (cached A3)   :a1, 0, 600
+
+    section Parallel Retrieval
+    ES metadata prefilter                   :b1, 600, 90
+    ANN SigLIP search                       :b2, 600, 120
+    ANN BEiT-3 search                       :b3, 600, 130
+    BM25 text search                        :b4, 600, 145
+
+    section Fusion & Verify
+    RRF + Temporal Grouping                 :c1, 750, 100
+    A4 Temporal Verify                      :d1, 850, 200
+
+    section Fine Rerank
+    A5 VLM Judge top-50 (Streamed)          :e1, 1050, 1500
+```
 
 ---
 
@@ -105,7 +286,7 @@ _check_frame (verify_index.py)
 
 ## 5. Core Tech Stack
 
-### The Primary Key: `frame_id`
+### Primary Key: `frame_id`
 ```
 frame_id = "{video_id}_{frame_index:06d}"
 Example:   L01_V001_000145
@@ -149,7 +330,7 @@ Owns:                             Owns:
   src/retrieval/                    src/routing/
   scripts/                          src/inference.py
   configs/config.yaml               src/eval.py
-                                    src/ui/app.py
+                                     src/ui/app.py
 
 Delivers:                         Consumes:
   data/index/turbovec/siglip.*      TurboVec stores (read)

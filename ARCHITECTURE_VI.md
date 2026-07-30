@@ -56,17 +56,198 @@ Hệ thống truy xuất online được điều khiển bởi 6 agent chuyên b
 
 Hệ thống triển khai **Agent-guided Multimodal Pipeline** kết hợp **Temporal Event Reasoning** và khung **Spatiotemporal Reasoning (STAR)** dành cho VQA.
 
-### Offline Indexing (Đội 1)
+### Sơ đồ Tổng quan Kiến trúc Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Team1 ["🗄️ Đội 1: Chuẩn bị Dữ liệu & Lập chỉ mục (Offline)"]
+        direction TB
+        RAW["📹 Video AIC 2026"]
+        RAW --> FF["⚙️ ffmpeg Fan-Out Decode\n(CPU Pool)"]
+        FF -->|"Ảnh Keyframe"| SigLIP["🖼️ VisualAgent\n(SigLIP — 1152-d)"]
+        FF -->|"Ảnh Keyframe"| BEiT3["🧠 BEiT3Agent\n(BEiT-3 — 768-d)"]
+        FF -->|"Ảnh Keyframe"| OCR["📝 OCRAgent\n(Gemini 2.0/3.5 Flash)"]
+        FF -->|"Audio Track thô"| ASR["🎤 ASRAgent\n(Whisper large-v3)"]
+        FF -->|"Audio Track thô"| AUD["🔊 Audio Event Tagger\n(BEATs / CLAP)"]
+
+        SigLIP --> TVS[("💾 FAISS/TurboVec\nChỉ mục SigLIP")]
+        BEiT3  --> TVB[("💾 FAISS/TurboVec\nChỉ mục BEiT-3")]
+
+        SigLIP ==> BAR{{"🚧 BARRIER\nPhân đoạn Embedding-Drift"}}
+        BAR --> Metadata["📍 Metadata Extractor\n(Date, Hour, Place, GPS)"]
+
+        ASR --> ES[("🔎 Kho Elasticsearch\nasr_text, ocr_text, date,\nhour_of_day, place_category,\naudio_events")]
+        OCR --> ES
+        AUD --> ES
+        Metadata --> ES
+    end
+
+    subgraph Team2 ["🧠 Đội 2: Multi-Agent Retrieval & Phục vụ (Online)"]
+        direction TB
+        TQ["👤 User Query"]
+        TQ --> A1["🔀 A1 Task Router\n(KIS / AVS / VQA / KISC)"]
+        A1 --> A2["📋 A2 Query Planner\n(Constraints JSON + Trọng số)"]
+        A2 --> A3["💡 A3 Concept Grounding\n(Semantic Memory Cache)"]
+
+        A2 -.->|"ES _count Dry-run"| ES
+
+        A3 --> EX["⚡ Execution Engine\n(asyncio.gather)"]
+        EX --> TVS
+        EX --> TVB
+        EX --> ES
+
+        TVS --> RRF["📊 Reciprocal Rank Fusion (RRF)\n+ Chuẩn hóa Điểm"]
+        TVB --> RRF
+        ES --> RRF
+
+        RRF --> A4["⏱️ A4 Temporal Verifier\n(Thứ tự Chuỗi & Sự kiện Trước)"]
+        A4 --> A5["🔬 A5 VLM Reranker / Judge\n(Top-50 Cross-Encoder với Hard Veto)"]
+        A5 --> FINAL["🏆 Kết quả Sự kiện Video đã Xếp hạng"]
+
+        RRF --> A6["❓ A6 Clarification Agent\n(KISC Max-Entropy Facet Prompt)"]
+        A6 -.->|"Câu hỏi Làm rõ"| TQ
+    end
+```
+
+### 3.1 Quy trình Lập chỉ mục Offline (Đội 1)
 1. **Fan-Out Decoding:** `ffmpeg` decode frames (trên CPU pool) và audio track một lần duy nhất.
 2. **Audio Event Tagging:** `BEATs` hoặc `CLAP` trích xuất audio events (ví dụ: "traffic", "cooking") để cung cấp location/activity priors mạnh mẽ khi ASR thất bại trên egocentric video.
 3. **Embedding-Drift Segmentation:** Thay thế shot boundary detection truyền thống. Phân đoạn cảnh quay bằng cách đo drift giữa các visual embeddings pre-computed (Similar Shot Linkage).
 4. **Metadata Indexing:** Mỗi event được index vào Elasticsearch cùng với các pruning filters quan trọng: `date`, `hour_of_day`, `place_category`, và `audio_events`.
 
-### Online Retrieval & VQA (Đội 2)
-1. **Agentic Query Planning:** `A2` expand query và phân bổ modality weights động giữa visual, OCR, và audio. Sử dụng **World Model Dry-run** (ES `_count`) để linh hoạt relax hoặc tighten constraints trước khi execute.
-2. **Parallel Search:** Query đồng thời Elasticsearch (Metadata + Text) và TurboVec (Visual) thông qua `asyncio.gather` với per-tool timeouts.
-3. **KISC Entropy Clarification:** Đối với conversational queries, `A6` tính entropy của các facets (ví dụ: indoor/outdoor) trên candidate set. Đưa ra câu hỏi ở facet có entropy cao nhất để chia đôi search space.
-4. **VQA STAR Framework:** Cho Video QA, Planner điều phối các **Temporal Tools** (mở rộng time window) và **Spatial Tools** (bao gồm **ZOOM Tool** để crop và OCR vùng ảnh ở full resolution).
+#### Sơ đồ DAG Pipeline Offline Bất đồng bộ
+```mermaid
+flowchart TB
+    START(["Hàng chờ Video"]) --> DEC["[CPU Pool] ffmpeg decode\nframes @1-2fps + audio.wav"]
+    DEC --> Q1[/"Hàng chờ frames (maxsize=N)"/]
+    DEC --> Q2[/"Hàng chờ audio (maxsize=N)"/]
+
+    Q1 --> GEMB["[GPU] SigLIP2 + BEiT-3 Embed"]
+    Q1 --> GDET["[GPU] Object / Scene Detector"]
+    Q1 --> CTXT["[CPU] Text Detector Gate"]
+
+    Q2 --> GASR["[GPU] WhisperX ASR"]
+    Q2 --> GAUD["[GPU] BEATs Audio Event Tagging"]
+
+    GEMB ==> BAR{{"🚧 BARRIER\nPhân đoạn Embedding-Drift\n+ Liên kết Cảnh Tương tự"}}
+    BAR ==> REP["Chọn 1 Frame đại diện / EVENT"]
+    REP --> ACAP["[API] Gemini Event Captioning"]
+    CTXT -->|"Frames có chứa chữ (~15%)"| AOCR["[API] Gemini OCR"]
+
+    GDET --> JOIN["Late Join theo (video_id, t)\n→ Tài liệu Sự kiện"]
+    GASR --> JOIN
+    GAUD --> JOIN
+    ACAP --> JOIN
+    AOCR --> JOIN
+    BAR  --> JOIN
+
+    JOIN --> W1[("Chỉ mục Turbovec")]
+    JOIN --> W2[("Kho Elasticsearch")]
+```
+
+---
+
+### 3.2 Luồng Truy xuất & Thực thi Online (Đội 2)
+
+#### Sequence Diagram: Luồng Truy vấn KIS Đầy đủ
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Người dùng
+    participant A1 as A1 Router
+    participant A2 as A2 Planner
+    participant A3 as A3 Grounding
+    participant EX as Executor
+    participant ES as Elasticsearch
+    participant TV as Turbovec
+    participant A4 as A4 Temporal
+    participant A5 as A5 VLM Judge
+
+    U->>A1: "Tìm lúc tôi nhìn thấy người lính chì trong TTTM"
+    A1->>A2: task = KIS
+    A2->>A3: concept = "lính chì"
+    A3-->>A2: "standing figure, red military uniform, gold buttons, tall black bearskin hat"
+    A2->>EX: constraints JSON (weights: visual 0.7, audio 0.15, ocr 0.1)
+    par Tìm kiếm Song song (asyncio.gather)
+        EX->>ES: metadata prefilter (place_category = indoor/retail)
+        EX->>TV: ANN siglip query
+        EX->>TV: ANN ego-encoder query
+        EX->>ES: BM25 caption/ocr search
+    end
+    EX->>EX: RRF fusion & temporal grouping thành các EVENT
+    EX->>A4: candidate events
+    A4-->>EX: lọc các vi phạm thứ tự thời gian
+    EX->>A5: top-50 candidate events
+    A5-->>U: Hiển thị kết quả (Streamed)
+```
+
+#### Sequence Diagram: KISC Hội thoại Nhiều lượt
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Người dùng
+    participant A1 as A1 Router
+    participant A6 as A6 Clarify
+    participant EX as Executor
+    participant ST as Session State
+
+    U->>A1: "Tìm đoạn tôi gặp người bạn cũ tuần trước"
+    A1->>ST: task = KISC, lưu lượt 1
+    A1->>EX: tìm kiếm diện rộng
+    EX-->>A6: 4,800 candidate events
+    A6->>A6: Tính toán facet entropy (indoor/outdoor = 0.99 MAX)
+    A6-->>U: "Cuộc gặp đó ở trong nhà hay ngoài trời? Người bạn đó là nam hay nữ?"
+    U->>ST: "Quán cà phê ngoài trời, anh ấy mặc áo sơ mi xanh"
+    ST->>EX: tích luỹ ràng buộc (time=tuần trước, place=outdoor/cafe, shirt=blue)
+    EX-->>A6: 37 candidate events (entropy thấp)
+    A6-->>U: Top-5 kết quả xếp hạng kèm timestamps
+```
+
+---
+
+### 3.3 Khung Video QA (VQA) STAR Framework
+Đối với Video QA, LLM Planner điều phối các công cụ thời gian và không gian trong một vòng lặp:
+
+```mermaid
+flowchart TD
+    VQ["Câu hỏi VQA"] --> RET["Truy xuất Evidence\n(Cascaded Search)"]
+    RET --> VFD["Visible Frame Dictionary\n(Tập frame đang thấy + timestamps)"]
+    VFD --> PLAN{"LLM Planner\nCòn thiếu thông tin gì?"}
+
+    PLAN -->|"Thiếu ngữ cảnh trước/sau"| TT["⏱️ Temporal Tools\n• Mở rộng cửa sổ ±dt\n• Chọn keyframes\n• Nhảy tới event kế"]
+    PLAN -->|"Thiếu chi tiết trong khung hình"| ST["🔍 Spatial Tools\n• Detect vật thể\n• Bounding box crop\n• ZOOM Tool (Full-res OCR)"]
+
+    TT --> VFD
+    ST --> VFD
+    PLAN -->|"Đủ bằng chứng hoặc đạt max 3 vòng"| ANS["Sinh câu trả lời\n+ Timestamp chứng minh"]
+```
+
+---
+
+### 3.4 Ngân sách Latency Online
+
+```mermaid
+gantt
+    title Ngân sách Latency Truy vấn Online 1 Lượt
+    dateFormat  X
+    axisFormat  %L ms
+
+    section Agent Orchestration
+    A1+A2+A3 gộp 1 LLM call (cached A3)   :a1, 0, 600
+
+    section Parallel Retrieval
+    ES metadata prefilter                   :b1, 600, 90
+    ANN SigLIP search                       :b2, 600, 120
+    ANN BEiT-3 search                       :b3, 600, 130
+    BM25 text search                        :b4, 600, 145
+
+    section Fusion & Verify
+    RRF + Temporal Grouping                 :c1, 750, 100
+    A4 Temporal Verify                      :d1, 850, 200
+
+    section Fine Rerank
+    A5 VLM Judge top-50 (Streamed)          :e1, 1050, 1500
+```
 
 ---
 
