@@ -1,8 +1,8 @@
 # Kế hoạch Triển khai & Tích hợp — Vòng Sơ khảo
 
-Tài liệu này vạch ra chiến lược triển khai, trách nhiệm của các đội và hợp đồng API (API contract) cần thiết để xây dựng hệ thống mà không gặp lỗi tích hợp. Tài liệu này đi kèm với `ARCHITECTURE_VI.md`.
+Tài liệu này vạch ra chiến lược triển khai, trách nhiệm của các đội và API contract cần thiết để xây dựng hệ thống mà không gặp lỗi tích hợp. Tài liệu này đi kèm với `ARCHITECTURE_VI.md`.
 
-**Nguyên tắc chỉ đạo:** Vòng sơ khảo chấm điểm dựa trên **độ chính xác (accuracy)**, không phải độ trễ (latency). Mỗi thành phần đều có phạm vi **Giai đoạn 1 (baseline)** (giải pháp đơn giản và đúng nhất) và **Giai đoạn 2 (refine)** (tối ưu hóa cho độ trễ/mở rộng). Không bắt đầu làm Giai đoạn 2 cho đến khi Giai đoạn 1 đã hoạt động trơn tru từ đầu đến cuối.
+**Nguyên tắc chỉ đạo:** Vòng sơ khảo chấm điểm dựa trên **accuracy**, không phải latency. Mỗi thành phần đều có phạm vi **Giai đoạn 1 (baseline)** (giải pháp đơn giản và đúng nhất) và **Giai đoạn 2 (refine)** (tối ưu hóa cho độ trễ/mở rộng). Không bắt đầu làm Giai đoạn 2 cho đến khi Giai đoạn 1 đã hoạt động trơn tru từ đầu đến cuối.
 
 ---
 
@@ -12,18 +12,18 @@ Công việc được chia thành 4 phần cho 2 đội:
 
 | Đội | Trách nhiệm |
 |---|---|
-| **Đội 1 — Dữ liệu & Lập chỉ mục** | Phần 1 (Lập chỉ mục Offline), Phần 2 (Tập dữ liệu Đánh giá & Metrics) |
-| **Đội 2 — Truy xuất & Phục vụ** | Phần 3 (Thư viện Agent Dùng chung), Phần 4 (Truy xuất, Xếp hạng, Điều phối) |
+| **Đội 1 — Data & Indexing** | Phần 1 (Offline Indexing Pipeline), Phần 2 (Eval Dataset & Metrics) |
+| **Đội 2 — Retrieval & Serving** | Phần 3 (Shared Agent Library), Phần 4 (Retrieval, Ranking, Dispatcher) |
 
 ```mermaid
 flowchart LR
-    subgraph Team1["Đội 1 — Dữ liệu & Lập chỉ mục"]
-        P1["Phần 1<br/>Pipeline Lập chỉ mục Offline"]
-        P2["Phần 2<br/>Tập dữ liệu Đánh giá & Metrics"]
+    subgraph Team1["Đội 1 — Data & Indexing"]
+        P1["Phần 1<br/>Offline Indexing Pipeline"]
+        P2["Phần 2<br/>Eval Dataset & Metrics"]
     end
-    subgraph Team2["Đội 2 — Truy xuất & Phục vụ"]
-        P3["Phần 3<br/>Thư viện Agent Dùng chung<br/>(Visual / ASR / OCR encoders)"]
-        P4["Phần 4<br/>Truy xuất, Xếp hạng<br/>& Điều phối"]
+    subgraph Team2["Đội 2 — Retrieval & Serving"]
+        P3["Phần 3<br/>Shared Agent Library<br/>(Visual / ASR / OCR encoders)"]
+        P4["Phần 4<br/>Query-Time Retrieval,<br/>Ranking & Dispatcher"]
     end
 
     P3 -->|image encoder, dùng bởi| P1
@@ -35,7 +35,7 @@ flowchart LR
 ```
 
 > **QUAN TRỌNG**
-> **Phần 3 (Thư viện Agent Dùng chung)** là phụ thuộc của cả Phần 1 và Phần 4. Giao diện (interface) của nó phải được chốt và xây dựng đầu tiên (dù chỉ là bản stub/mock) trước khi các phần khác bắt đầu phát triển.
+> **Phần 3 (Shared Agent Library)** là phụ thuộc của cả Phần 1 và Phần 4. Interface của nó phải được chốt và xây dựng đầu tiên (dù chỉ là bản stub/mock) trước khi các phần khác bắt đầu phát triển.
 
 ---
 
@@ -43,35 +43,35 @@ flowchart LR
 
 Vì Đội 1 chuẩn bị cơ sở dữ liệu offline và Đội 2 truy vấn online, cả hai đội **BẮT BUỘC** phải thống nhất các quy tắc sau.
 
-### 2.1 Hợp đồng Embedding
+### 2.1 Embedding Contract
 - **Model:** SigLIP `ViT-SO400M-14-384`, tag `webli`, load qua `open_clip` (`open-clip-torch`) — đã được chốt trong `configs/config.yaml`.
 - **Output:** `numpy.ndarray`, shape `(1152,)`, dtype `float32`.
-- **Bắt buộc chuẩn hóa L2** trước khi lưu/tìm kiếm — giúp inner-product search tương đương cosine similarity, đúng với yêu cầu của `IndexFlatIP`.
-- Cả query hình ảnh lẫn văn bản **đều phải đi qua cùng một instance của model** để đảm bảo chung không gian embedding. Đây là điều quan trọng nhất cần đồng thuận giữa Đội 1 (mã hóa keyframe) và Đội 2 (mã hóa query).
+- **Bắt buộc L2-normalized** trước khi lưu/tìm kiếm — giúp inner-product search tương đương cosine similarity, đúng với yêu cầu của `IndexFlatIP`.
+- Cả image lẫn text query **đều phải đi qua cùng một model instance/weights** để đảm bảo chung không gian embedding. Đây là điều quan trọng nhất cần đồng thuận giữa Đội 1 (embed keyframes) và Đội 2 (embed query text).
 
-### 2.2 Core ID (Khóa chính)
-Mỗi keyframe được trích xuất phải có một định danh thống nhất. Cả cơ sở dữ liệu vector (Turbovec/FAISS) và văn bản (Elasticsearch) đều phải dùng chính xác định dạng này.
+### 2.2 Core ID (Primary Key)
+Mỗi keyframe được trích xuất phải có một định danh thống nhất. Cả vector stores (Turbovec/FAISS) và text stores (Elasticsearch) đều phải dùng chính xác định dạng này.
 - **Định dạng:** `{video_id}_{frame_index}`
 - **Ví dụ:** `L01_V001_0145` (Video L01_V001, Frame 145)
 
-### 2.3 Hợp đồng Output của Agent
+### 2.3 Agent Output Contract
 
 | Agent | Kiểu `output` | Shape/các trường cụ thể |
 |---|---|---|
-| `VisualAgent` | `np.ndarray` | `(1152,)` float32, đã chuẩn hóa L2 |
+| `VisualAgent` | `np.ndarray` | `(1152,)` float32, L2-normalized |
 | `ASRAgent` | `dict` | `{"text": str, "segments": [{"start": float, "end": float, "text": str}]}` |
 | `OCRAgent` | `str` | văn bản trích xuất, `""` nếu không có — không bao giờ trả `None` |
 
-### 2.4 Chữ ký hàm Truy xuất (không được thay đổi)
+### 2.4 Retrieval Function Signature (không thay đổi)
 ```python
 # src/inference.py
 def search(query: str, config: dict, top_k: int = 10) -> list[dict]:
     # trả về: [{"video_id": str, "frame_idx": int, "timestamp_sec": float, "score": float}, ...]
 ```
-Đây là hàm mà cả harness đánh giá (Phần 2) và UI đều gọi. Đội 2 chịu trách nhiệm triển khai; Đội 1 chỉ cần biết định dạng này để viết harness mà không phải chờ Phần 4 hoàn thành.
+Đây là hàm mà cả eval harness (Phần 2) và UI đều gọi. Đội 2 chịu trách nhiệm triển khai; Đội 1 chỉ cần biết shape này để viết eval harness mà không phải chờ Phần 4 hoàn thành.
 
-### 2.5 Schema của Elasticsearch Document
-Khi Đội 1 chèn văn bản và metadata vào Elasticsearch, họ phải bao gồm các trường sau để hỗ trợ tính năng Lọc chạy thử Mô hình Thế giới (World Model Dry-run) của A2 (lọc với chi phí bằng 0):
+### 2.5 Elasticsearch Document Schema
+Khi Đội 1 chèn text và metadata vào Elasticsearch, họ phải bao gồm các trường sau để hỗ trợ A2 World Model Dry-run filtering (0-cost pruning):
 ```json
 {
   "frame_id": "L01_V001_0145",
@@ -87,19 +87,19 @@ Khi Đội 1 chèn văn bản và metadata vào Elasticsearch, họ phải bao g
 }
 ```
 
-### 2.6 Thỏa thuận Lưu trữ Vector (Turbovec / FAISS)
-Đội 1 phải đính kèm `frame_id` cùng với vector khi thêm vào cơ sở dữ liệu. Với FAISS, `embedding_id` (số nguyên) phải ánh xạ tới `frame_id` trong kho metadata.
+### 2.6 Vector Storage Agreement (Turbovec / FAISS)
+Đội 1 phải đính kèm `frame_id` cùng với vector khi insert. Với FAISS, `embedding_id` (số nguyên) phải ánh xạ tới `frame_id` trong metadata store.
 
-### 2.7 Đường dẫn Tệp tin (Dành cho UI)
+### 2.7 File System Paths (Cho UI)
 - **Đường dẫn:** `data/keyframes/{video_id}/{frame_id}.jpg`
 - **Ví dụ:** `data/keyframes/L01_V001/L01_V001_0145.jpg`
 
-### 2.8 Hai Tập dữ liệu Truy vấn riêng biệt — Không nhầm lẫn
-1. **Dữ liệu huấn luyện bộ phân loại** (`data/raw/queries/queries.json`, dùng bởi `src/data_loader.py`) — các mẫu có nhãn để train `QueryClassifier`:
+### 2.8 Hai Tập Datasets Truy vấn riêng biệt — Không nhầm lẫn
+1. **Classifier training data** (`data/raw/queries/queries.json`, consumed bởi `src/data_loader.py`) — labeled examples để train `QueryClassifier`:
    ```json
    [{"query": "tìm khoảnh khắc...", "embedding": [0.01, ...], "query_type": 0, "complexity": 1}]
    ```
-2. **Ground truth Truy xuất** (`data/raw/queries/eval_ground_truth.json`, do Phần 2 sở hữu, **chưa có stub — Đội 1 phải tạo**) — đáp án dùng để đo độ chính xác:
+2. **Retrieval ground truth** (`data/raw/queries/eval_ground_truth.json`, sở hữu bởi Phần 2, **chưa có stub — Đội 1 phải tạo**) — answer key dùng để đo accuracy:
    ```json
    [{"query_id": "q001", "query_text": "...", "query_type": "KIS", "video_id": "L21_V001", "timestamp_sec": 142.5, "tolerance_sec": 2.0}]
    ```
@@ -108,122 +108,120 @@ Khi Đội 1 chèn văn bản và metadata vào Elasticsearch, họ phải bao g
 
 ## 3. Chi tiết Triển khai theo từng Phần
 
-### Phần 1: Pipeline Lập chỉ mục Offline (Đội 1)
+### Phần 1: Offline Indexing Pipeline (Đội 1)
 **Files:** `src/retrieval/video_indexer.py`, `src/retrieval/vector_store.py`
 
-**Mục tiêu:** Mọi video được cung cấp đều trở thành một tập keyframe có thể tìm kiếm và đi kèm đầy đủ metadata.
+**Mục tiêu:** Mọi video được cung cấp đều trở thành một tập keyframes có thể tìm kiếm và đi kèm đầy đủ metadata.
 
 | Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (tinh chỉnh) |
 |---|---|---|---|
-| Đọc video | `pathlib` | Liệt kê `data/raw/videos/*.mp4` | — |
-| Lấy mẫu frame | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` theo config) — nhanh, dự đoán | **Embedding-Drift Segmentation**: Phân đoạn các cảnh không qua chỉnh sửa bằng cách đo độ lệch giữa các visual embedding đã tính toán sẵn, không cần thư viện shot-detector bên ngoài. |
-| Visual embedding | `open_clip` — SigLIP `ViT-SO400M-14-384` | Một embedding mỗi keyframe, theo §2.1 | — |
-| ASR | `openai-whisper` `large-v3`, `language="vi"` | Chạy một lần dợ video; gán mỗi keyframe vào segment Whisper phù hợp theo `timestamp_sec` | — |
-| OCR | `google-generativeai` Gemini `gemini-1.5-flash` | **Tùy chọn ở Giai đoạn 1** — bỏ qua nếu bị giới hạn thời gian; visual embeddings động lực chính cho kết quả KIS/AVS | Thêm vào sau khi baseline hoạt động |
-| Chỉ mục vector | `faiss-cpu` | `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` — tìm kiếm chính xác, không cần bước `train()`, tránh một loại lỗi rất phổ biến | `faiss.IndexIVFFlat` (nlist=256, nprobe=32) khi corpus quá lớn |
-| Kho metadata | `pandas` | Một file Parquet duy nhất — `df.to_parquet()` | Chuyển sang Milvus/Elasticsearch chỉ khi approach file-based không đáp ứng được |
+| Video ingestion | `pathlib` | Liệt kê `data/raw/videos/*.mp4` | — |
+| Frame sampling | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` theo config) — nhanh, dự đoán | **Embedding-Drift Segmentation**: Phân đoạn các cảnh không qua chỉnh sửa bằng cách đo drift giữa các visual embeddings pre-computed, không cần shot-detector bên ngoài. |
+| Visual embedding | `open_clip` — SigLIP `ViT-SO400M-14-384` | One embedding per keyframe, theo §2.1 | — |
+| ASR | `openai-whisper` `large-v3`, `language="vi"` | Run một lần per video; map mỗi keyframe vào segment Whisper phù hợp theo `timestamp_sec` | — |
+| OCR | `google-generativeai` Gemini `gemini-1.5-flash` | **Tùy chọn ở Giai đoạn 1** — bỏ qua nếu time-constrained; visual embeddings là động lực chính cho KIS/AVS | Thêm vào sau khi baseline hoạt động |
+| Vector index | `faiss-cpu` | `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` — exact search, không cần `train()`, tránh lỗi | `faiss.IndexIVFFlat` (nlist=256, nprobe=32) khi corpus quá lớn |
+| Metadata store | `pandas` | Một file Parquet duy nhất — `df.to_parquet()` | Chuyển sang Milvus/Elasticsearch chỉ khi file-based approach gặp bottleneck |
 
 **Output:** `data/processed/embeddings/index.faiss` + `data/processed/embeddings/metadata.parquet`
 
-### Phần 2: Tập dữ liệu Đánh giá & Metrics (Đội 1)
+### Phần 2: Eval Dataset & Metrics (Đội 1)
 **Files:** `src/eval.py` + `data/raw/queries/eval_ground_truth.json` (mới, chưa có stub)
 
-**Mục tiêu:** Trả lời câu hỏi "độ chính xác của hệ thống là bao nhiêu?" — cả hai đội đều cần điều này để biết liệu thay đổi của họ có giúp ích hay không.
+**Mục tiêu:** Trả lời câu hỏi "độ chính xác của hệ thống là bao nhiêu?" — cả hai đội đều cần điều này để biết liệu thay đổi có giúp ích hay không.
 
 | Bước | Thư viện | Giai đoạn 1 |
 |---|---|---|
-| Tạo ground truth | `json` | Nhãn tay ~30–50 câu KIS theo schema §2.8. Một kết quả được tính đúng nếu `abs(timestamp_trả_về - timestamp_gt) <= tolerance_sec` VÀ `video_id` khớp. |
+| Ground truth authoring | `json` | Hand-label ~30–50 câu KIS theo schema §2.8. Một hit tính đúng nếu `abs(returned.timestamp_sec - ground_truth.timestamp_sec) <= tolerance_sec` VÀ `video_id` khớp. |
 | Metrics | `numpy` | **Recall@K** (K = 1, 5, 10) và **Mean Reciprocal Rank (MRR)** |
 | Harness | Python | `python -m src.eval --ground-truth data/raw/queries/eval_ground_truth.json` → gọi `src.inference.search()` mỗi query, in bảng kết quả metrics |
 
-**Output:** `eval_ground_truth.json` + báo cáo metrics — thứ giúp cả hai đội biết khi nào Giai đoạn 1 là "xong".
+**Output:** `eval_ground_truth.json` + báo cáo metrics — thứ giúp cả hai đội biết khi nào Giai đoạn 1 là "done".
 
 ---
 
-### Phần 3: Thư viện Agent Dùng chung (Đội 2)
+## 3.3 Phần 3: Shared Agent Library (Đội 2)
 **Files:** `src/agents/base_agent.py`, `visual_agent.py`, `asr_agent.py`, `ocr_agent.py`
 
-**Xây dựng cái này trước tiên**, dù chỉ là một stub mỏng — Phần 1 và Phần 4 đều phụ thuộc vào nó.
+**Agent Memory (Alignment với BTC Buổi 3):**
+- **Semantic Memory:** `A3 (Concept Grounding)` cache mô tả object/concept ra đĩa.
+- **Episodic Memory:** Turn logs cho KISC conversational queries (`orchestrator.py` phải persist state qua các lượt).
+- **Procedural Memory:** Tools registry được load bởi Execution Engine.
 
-| Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (tinh chỉnh) |
+| Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (refine) |
 |---|---|---|---|
-| `VisualAgent` | `open_clip` — SigLIP `ViT-SO400M-14-384` | Load model một lần trong `__init__`; `_run({"image": path})` → embedding; `_run({"text": str})` → embedding. Cả hai đi qua **cùng** model (§2.1). | — |
-| `ASRAgent` | `openai-whisper`, `large-v3` | Load model một lần; `_run(audio_path)` → `{"text": ..., "segments": [...]}` theo §2.3 | — |
-| `OCRAgent` | `google-generativeai` Gemini `gemini-1.5-flash` | `_run(image)` → chuỗi văn bản, `""` nếu không có | — |
-| Đồng thời hóa | `asyncio.Semaphore(max_concurrent)` | Có thể bỏ qua ở Giai đoạn 1 nếu agent chạy tuần tự | Cần thiết khi có concurrency thực sự |
-| Đo độ trễ | `time.perf_counter()` trong `BaseAgent.process()` | Tùy chọn ở Giai đoạn 1 | Bắt buộc ở Giai đoạn 2 |
+| `VisualAgent` | `open_clip` — SigLIP `ViT-SO400M-14-384` | Load model 1 lần trong `__init__`; `_run({"image": path})` → embedding; `_run({"text": str})` → embedding. Cả hai đi qua **cùng** model (§2.1). | — |
+| `ASRAgent` | `openai-whisper`, `large-v3` | Load model 1 lần; `_run(audio_path)` → `{"text": ..., "segments": [...]}` theo §2.3 | — |
+| `OCRAgent` | `google-generativeai` Gemini `gemini-1.5-flash` | `_run(image)` → chuỗi text, `""` nếu không có | **ZOOM Tool:** Crop-then-OCR ở full resolution. |
+| `QueryPlanner (A2)` | LLM | Parse constraints thành typed JSON. | Add **World Model Dry-run**: Gọi ES `_count` kiểm tra plan feasibility trước khi thực thi thực tế (~5ms). |
+| Concurrency | `asyncio.Semaphore(max_concurrent)` | Bỏ qua ở Giai đoạn 1 nếu gọi tuần tự | Bắt buộc khi có concurrency thực sự |
+| Latency tracking | `time.perf_counter()` trong `BaseAgent.process()` | Tùy chọn ở Giai đoạn 1 | Bắt buộc ở Giai đoạn 2 |
 
-**Output:** Ba lớp agent mà `process()` trả về `AgentResult` theo §2.3.
+**Output:** Agent classes và A1-A6 orchestration loop trả về `AgentResult`.
 
 ---
 
-### Phần 4: Truy xuất & Xếp hạng tại thời điểm Truy vấn (Đội 2)
+## 3.4 Phần 4: Query-Time Retrieval & Ranking (Đội 2)
 **Files:** `src/inference.py`, `src/routing/classifier.py`, `src/routing/dispatcher.py`, `src/retrieval/vector_store.py`
 
-**Mục tiêu:** Truy xuất top-k chính xác cho câu truy vấn văn bản.
+**Mục tiêu:** Top-k retrieval chính xác cho text query.
 
-| Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (tinh chỉnh) |
+| Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (refine) |
 |---|---|---|---|
-| Phân loại truy vấn | plain Python | Dùng `rule_based_classify()` hiện có — quyết định routing không ảnh hưởng *kết quả nào là đúng* | Train `QueryClassifier` (MLP) khi có dữ liệu từ Phần 2 |
-| Mã hóa query | `VisualAgent` chế độ text (Phần 3) | Nhúng trực tiếp chuỗi query | — |
-| Tìm kiếm vector | `faiss-cpu` | `VectorStore.search(query_vec, top_k)` trên chỉ mục của Phần 1 | — |
-| Tìm kiếm văn bản hybrid | `rank_bm25` (không cần server) | Chỉ cho query rõ ràng liên quan đến giọi nói/text: `final = 0.7*visual + 0.3*text` | Elasticsearch nếu BM25-in-process trở nên cồng kềnh |
-| Xếp hạng | plain Python | Sắp xếp theo điểm `final`, trả top_k | **Unified Clipping Algorithm** — nhóm các frame cùng video thành đề xuất clip, giúp rất nhiều cho bài toán AVS |
-| Điều phối | `src/routing/dispatcher.py` | Gọi đồng bộ trực tiếp — `asyncio.gather()`, không ước tính thời gian chờ | Kiểm soát concurrency async khi throughput trở nên quan trọng |
+| Query classification | plain Python | Dùng `rule_based_classify()` hiện có — routing decision không ảnh hưởng *kết quả nào là đúng* | Train `QueryClassifier` (MLP) khi có dữ liệu từ Phần 2 |
+| Query embedding | `VisualAgent` text mode (Phần 3) | Embed trực tiếp query string | — |
+| Vector search | `faiss-cpu` | `VectorStore.search(query_vec, top_k)` trên index của Phần 1 | — |
+| Hybrid text matching | `rank_bm25` (không cần server) | Chỉ cho query liên quan giọng nói/text: `final = 0.7*visual + 0.3*text` | Elasticsearch nếu BM25-in-process thành bottleneck |
+| Ranking | plain Python | Sort theo `final` score, trả top_k | **Unified Clipping Algorithm** — nhóm hits per-video thành clip suggestions |
+| Dispatcher | `src/routing/dispatcher.py` | Dispatch synchronous — `asyncio.gather()` trực tiếp | Async concurrency controls khi throughput thành concern |
 
 ---
 
-## 4. Schema Cơ sở Dữ liệu Chính xác (Điểm Hội tụ)
+## 4. Schema Cơ sở Dữ liệu (Point of Convergence)
 
-Cả hai file đều nằm trong `data/processed/embeddings/`.
+Cả hai file nằm trong `data/processed/embeddings/`.
 
 ### 4.1 `index.faiss`
-- Kiểu: `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` (Giai đoạn 1).
-- Thêm dữ liệu bằng `index.add_with_ids(embeddings, ids)` với `ids` là các giá trị `embedding_id` từ bảng metadata.
-- **Không bao giờ dùng ID tuần tự ngầm định của FAISS** — luôn gán tường minh qua `IndexIDMap` để join với metadata luôn chính xác dù các dòng được thêm không theo thứ tự.
+- Type: `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` (Giai đoạn 1).
+- Populated bằng `index.add_with_ids(embeddings, ids)` với `ids` là các giá trị `embedding_id` từ bảng metadata.
+- **Không bao giờ dùng ID tuần tự ngầm định của FAISS** — luôn gán tường minh qua `IndexIDMap` để join với metadata luôn chính xác.
 
 ### 4.2 `metadata.parquet`
 
-| Cột | Kiểu dữ liệu | Ghi chú |
+| Cột | Type | Ghi chú |
 |---|---|---|
-| `embedding_id` | `int64` | Khóa chính; khớp chính xác với id trong FAISS |
-| `video_id` | `string` | VD: `L21_V001` |
-| `frame_idx` | `int64` | Số frame trong video gốc |
-| `timestamp_sec` | `float64` | **Đây là giá trị được dùng để chấm điểm** |
-| `keyframe_path` | `string` | Đường dẫn đến file `.jpg` |
-| `asr_text` | `string` (nullable) | Từ Whisper, ghép qua temporal overlap |
-| `ocr_text` | `string` (nullable) | Từ Gemini, theo từng keyframe |
+| `embedding_id` | `int64` | Primary key; khớp chính xác với id trong FAISS |
+| `video_id` | `string` | Ví dụ: `L21_V001` |
+| `frame_idx` | `int64` | Frame number trong source video |
+| `timestamp_sec` | `float64` | **Giá trị dùng để graded** |
+| `keyframe_path` | `string` | Đường dẫn file `.jpg` |
+| `asr_text` | `string` (nullable) | Từ Whisper, join qua temporal overlap |
+| `ocr_text` | `string` (nullable) | Từ Gemini, per-keyframe |
 | `source_type` | `string` | `"surveillance"` / `"sousveillance"` |
 
-### 4.3 Phần 4 (Đội 2) đọc và trả về gì
-- Đọc: `index.faiss` + `metadata.parquet`, join theo `embedding_id`.
-- Trả về (theo chữ ký hàm §2.4): `{"video_id", "frame_idx", "timestamp_sec", "score"}` — một tập con có chủ đích. Harness đánh giá và UI chỉ nhìn thấy định dạng này, không bao giờ thấy các cột Parquet thô.
+---
+
+## 5. Integration Strategy
+
+**Golden Mini-set:** Đừng chờ toàn bộ corpus được indexed xong.
+1. Đội 1 index 10–20 videos và publish `index.faiss` + `metadata.parquet` cho subset đó.
+2. Đội 2 build và test Phần 4 trên mini-set này trong khi Đội 1 index song song.
+3. Ground-truth file chỉ cần cover mini-set ban đầu — extend sau khi full corpus được index.
 
 ---
 
-## 5. Chiến lược Tích hợp
+## 6. Consolidated Library & Model Reference
 
-**Xây dựng Tập con Vàng (Golden Mini-set):** Đừng đợi đến khi toàn bộ dữ liệu được lập chỉ mục xong.
-1. Đội 1 lập chỉ mục trước 10–20 video và xuất `index.faiss` + `metadata.parquet` chỉ cho tập con đó.
-2. Đội 2 xây dựng và kiểm thử Phần 4 dựa trên tập con này trong khi Đội 1 tiếp tục lập chỉ mục song song.
-3. File ground-truth của Đội 1 chỉ cần bao phủ tập con ban đầu — mở rộng sau khi toàn bộ dữ liệu được lập chỉ mục xong.
-
-Điều này có nghĩa là lịch làm việc của hai đội không bị xếp hàng theo kiểu "Phần 1 xong hết rồi Phần 4 mới bắt đầu" — cả hai đội hội tụ tại hợp đồng chung (§2) và xác nhận nó sớm trên một phần nhỏ dữ liệu.
-
----
-
-## 6. Bảng Thư viện & Model Tổng hợp
-
-| Mục đích | Thư viện / Model | Giai đoạn |
+| Purpose | Library / Model | Phase |
 |---|---|---|
-| Lấy mẫu frame | `decord` | 1 |
-| Tùy biến keyframing | Embedding-Drift Segmentation (chỉ dùng numpy, không cần model) | 2 |
+| Frame sampling | `decord` | 1 |
+| Adaptive keyframing | Embedding-Drift Segmentation (numpy, no model) | 2 |
 | Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` | 1 |
 | ASR | `openai-whisper`, `large-v3` | 1 |
 | OCR | `google-generativeai`, Gemini `gemini-1.5-flash` | 1 (tùy chọn) |
-| Chỉ mục vector | `faiss-cpu` (`IndexFlatIP` → `IndexIVFFlat`) | 1 → 2 |
-| Kho metadata | `pandas` (Parquet) → Milvus/Elasticsearch | 1 → 2 |
-| Tìm kiếm văn bản hybrid | `rank_bm25` → Elasticsearch | 1 → 2 |
-| Captioning | *(không có)* → ReCap-style Gemini captioning | 2 |
-| Phân loại truy vấn | rule-based (hiện có) → trained MLP | 1 → 2 |
-| Xếp hạng clip | top-k theo điểm → Unified Clipping Algorithm | 1 → 2 |
+| Vector index | `faiss-cpu` (`IndexFlatIP` → `IndexIVFFlat`) | 1 → 2 |
+| Metadata store | `pandas` (Parquet) → Milvus/Elasticsearch | 1 → 2 |
+| Hybrid text scoring | `rank_bm25` → Elasticsearch | 1 → 2 |
+| Captioning | *(none)* → ReCap-style Gemini captioning | 2 |
+| Query classification | rule-based (existing) → trained MLP | 1 → 2 |
+| Clip ranking | top-k by score → Unified Clipping Algorithm | 1 → 2 |
