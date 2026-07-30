@@ -27,102 +27,46 @@ The codebase has **3 functional clusters** identified by static analysis:
 
 | Cluster | Role |
 |:---|:---|
-| **Agents** | All model wrappers (SigLIP, BEiT-3, Whisper, Gemini, BaseAgent) |
-| **Retrieval** | Shot detection, video indexing, TurboVec/FAISS store, Elasticsearch store |
-| **Routing** | Query classifier, rule-based classify, dynamic dispatcher |
+| **Agents (A1-A6)** | Multi-agent coordination for reasoning, memory, and planning. |
+| **Retrieval** | Video indexing, TurboVec store, Elasticsearch store. |
+| **UI & Feedback** | Relevance feedback, diversity caps, and concept exploration. |
 
-### 🧩 A. Agents
-- **BaseAgent:** Abstract base with concurrency control and latency tracking.
-- **VisualAgent:** Encodes images **and** text into a shared 1152-d embedding space via **SigLIP ViT-SO400M-14-384**. This shared space is what makes text queries find visual frames.
-- **BEiT3Agent:** Vision-only 768-d encoder using **BEiT-3 base_patch16_224**.
-- **ASRAgent:** Runs **Whisper large-v3** locally; extracts audio transcriptions.
-- **OCRAgent:** Calls **Gemini 2.0/3.5 Flash API**; extracts text from frames.
+### 🧩 A. The 6-Agent System (Team 2)
+The online retrieval system is driven by six specialized agents:
+- **A1 (Task Router):** Classifies the query (KIS, AVS, VQA, KISC) and routes execution.
+- **A2 (Query Planner):** Generates a typed constraint object (modality weights, temporal order). Executes ES `_count` dry-runs to prevent over-constrained queries (0 results).
+- **A3 (Concept Grounding):** Semantic memory cache. Expands concepts to visual descriptions.
+- **A4 (Temporal Verifier):** Checks temporal constraints ("entering a room, then taking off a hat").
+- **A5 (VLM Judge):** Cross-encoder reranker on the top-50 candidates with a hard veto.
+- **A6 (Clarification Agent):** For KISC. Calculates entropy on the candidate set to ask the user a single, optimal clarifying question.
 
-### 🗄️ B. Retrieval & Storage
-- **ShotDetector:** Wraps **TransNet V2** to detect visual shot boundaries.
-- **VideoIndexer:** The offline pipeline orchestrator.
+### 🗄️ B. Retrieval & Storage (Team 1)
+- **VideoIndexer:** The offline pipeline orchestrator (Decoupled CPU/GPU/API pools).
 - **Vector Store (FAISS/Turbovec):** Holds visual embeddings.
-- **Elasticsearch Store:** Inverted-index text store for OCR/ASR texts.
+- **Elasticsearch Store:** Holds metadata, OCR/ASR, **time, place, and audio events**.
 
-### 🧠 C. Routing & Classification
-- **rule_based_classify:** Phase 1 keyword-regex classifier.
-- **QueryClassifier:** Phase 2 MLP classifier for query types.
-- **DynamicDispatcher:** Maps queries to specific agents and runs them concurrently.
+### 💻 C. UI & Relevance Feedback
+- **Diversity Cap:** Restricts results to ≤2 events per video on the front page.
+- **"More Like This":** Image queries using existing vectors (zero model cost).
+- **Rocchio Feedback:** Relevance feedback to update query vectors without LLM latency.
 
 ---
 
 ## 3. The Agentic Architecture Pipeline
 
-We have implemented a modern **Agent-guided Multimodal Pipeline** with **Temporal Event Reasoning**.
+We have implemented a modern **Agent-guided Multimodal Pipeline** with **Temporal Event Reasoning** and a **Spatiotemporal Reasoning (STAR)** framework for VQA.
 
-### What is an Agentic Pipeline? (vs Ad-hoc or Zero-shot)
-- **Zero-shot / Ad-hoc Systems:** Typically rely on a single, rigid sequence (e.g., "Take query $\rightarrow$ convert to vector $\rightarrow$ search database $\rightarrow$ return results"). They cannot self-correct, decompose complex queries, or ask clarifying questions.
-- **Agentic Pipeline:** Operates dynamically. When a query is received, an orchestrator (LLM) decides *which* specialized sub-agents to invoke (Visual, ASR, OCR). It can expand the query, fuse multiple modalities based on context, and crucially, for the new KISC task, it can measure entropy in the candidate set and **ask the user clarifying questions** before returning a final answer.
+### Offline Indexing (Team 1)
+1. **Fan-Out Decoding:** `ffmpeg` decodes frames (CPU pool) and audio track once.
+2. **Audio Event Tagging:** `BEATs` or `CLAP` extracts audio events (e.g., "traffic", "cooking") to provide strong prior location/activity cues where ASR fails on egocentric video.
+3. **Embedding-Drift Segmentation:** Replaces traditional shot boundary detection. We segment unedited scenes by measuring drift between pre-computed visual embeddings (Similar Shot Linkage).
+4. **Metadata Indexing:** Each event is stored in Elasticsearch with critical pruning filters: `date`, `hour_of_day`, `place_category`, and `audio_events`.
 
-```mermaid
-flowchart TD
-    subgraph Team1 ["🗄️ Team 1: Data Preparation & Indexing (Offline)"]
-        direction TB
-
-        RAW["📹 AIC 2026 Videos"]
-
-        RAW --> SD["🎬 ShotDetector\n(TransNet V2)"]
-        SD -->|"Shot boundaries"| VI["⚙️ VideoIndexer\n(Pipeline Orchestrator)"]
-
-        RAW -->|"Raw audio"| ASR["🎤 ASRAgent\n(Whisper large-v3)"]
-        ASR -->|"segments"| VI
-
-        VI -->|"Keyframe images"| SigLIP["🖼️ VisualAgent\n(SigLIP — 1152-d)"]
-        VI -->|"Keyframe images"| BEiT3["🧠 BEiT3Agent\n(BEiT-3 — 768-d)"]
-        VI -->|"Keyframe images"| OCR["📝 OCRAgent\n(Gemini 2.0/3.5 Flash)"]
-
-        SigLIP -->|"float32 L2-normalised"| TVS[("💾 FAISS/TurboVec\nSigLIP Index")]
-        BEiT3  -->|"float32 L2-normalised"| TVB[("💾 FAISS/TurboVec\nBEiT-3 Index")]
-
-        VI -->|"temporal overlap"| ESW[("🔎 Elasticsearch\nasr_text field")]
-        OCR -->|"ocr_text string"| ESO[("🔎 Elasticsearch\nocr_text field")]
-    end
-
-    subgraph Team2 ["🧠 Team 2: NLP, Query Processing & Retrieval (Online)"]
-        direction TB
-
-        TQ["👤 User Text Query"]
-
-        TQ --> LLM["🤖 Agent Router\nQuery Expansion & Routing"]
-
-        LLM -->|"Visual weight"| TVS
-        LLM -->|"Visual weight"| TVB
-        LLM -->|"Text/Audio weights"| ESW
-        LLM -->|"Text/Audio weights"| ESO
-
-        TVS -->|"(frame_id, score) list"| SRRF["📊 Score-Reflected\nReciprocal Rank Fusion"]
-        TVB -->|"(frame_id, score) list"| SRRF
-        ESW -->|"(frame_id, BM25 score)"| SRRF
-        ESO -->|"(frame_id, BM25 score)"| SRRF
-
-        SRRF --> TBS["⏱️ Temporal Beam Search\n(Exponential Decay penalty)"]
-
-        TBS -->|"Candidate sequences"| BLIP["🔬 BLIP-2 Reranker\n(Cross-Encoder)"]
-
-        BLIP --> ASF["🎯 Adaptive Score Fusion\n(Min-Max normalised)"]
-        ASF --> FINAL["🏆 Final Ranked Video Segments\n{video_id, timestamp_seconds, score}"]
-    end
-```
-
-### Phase 1: Offline Indexing (Team 1)
-1. **Shot Boundary Detection:** `ShotDetector` runs **TransNet V2** (visual only) to locate scene cuts, producing `Shot` objects with frame numbers and timestamps in seconds.
-2. **Keyframe Extraction:** `VideoIndexer` grabs the middle frame of each shot via a single sequential `cv2.VideoCapture` decode pass.
-3. **ASR — Full Video Audio:** `ASRAgent` (Whisper large-v3) transcribes the entire raw video's audio track once per video. The resulting timed segments are then mapped to each shot via `_join_asr_to_shot()` using temporal overlap logic.
-4. **Vision Encoding (Dual):** Each keyframe image is embedded by **VisualAgent** (SigLIP, 1152-d) and **BEiT3Agent** (BEiT-3, 768-d). Both vectors are L2-normalised before storage.
-5. **OCR:** Each keyframe image is sent to **Gemini OCR** for on-screen text extraction.
-6. **Storage:** SigLIP + BEiT-3 vectors → two `TurbovecStore` indices. ASR + OCR text + timestamp → `ElasticsearchStore` with `frame_id` as the document `_id`.
-
-### Phase 2: Online Retrieval (Team 2)
-1. **Agentic Query Decomposition:** A user submits a complex query. The Agent Router expands it and dynamically routes importance weights between Visual, OCR, and ASR modalities.
-2. **Parallel Search:** The system queries Elasticsearch and both TurboVec stores simultaneously.
-3. **Temporal Beam Search:** Solves the Temporal Logic Constraint. A Beam Search algorithm with an Exponential Decay penalty `exp(-alpha * dt)` stitches isolated frames into coherent event sequences, penalising frames that are chronologically far apart.
-4. **Fine-grained Reranking:** The top candidate sequences are passed through a **BLIP-2** cross-encoder for precise image-text matching.
-5. **Adaptive Score Fusion:** Final scores are Min-Max normalised and fused based on the router's assigned weights.
+### Online Retrieval & VQA (Team 2)
+1. **Agentic Query Planning:** `A2` expands the query and dynamically routes weights between visual, OCR, and audio. It uses a **World Model Dry-run** (calling ES `_count`) to iteratively relax or tighten constraints before execution.
+2. **Parallel Search:** The system queries Elasticsearch (Metadata + Text) and TurboVec (Visual) simultaneously using `asyncio.gather` with tool-specific timeouts.
+3. **KISC Entropy Clarification:** For conversational queries, `A6` calculates the entropy of facets (e.g., indoor/outdoor) across the candidate set. It asks the user a question about the highest-entropy facet to divide the search space in half.
+4. **VQA STAR Framework:** For Video QA, a Planner orchestrates **Temporal tools** (expanding the time window) and **Spatial tools** (including a **ZOOM tool** to crop and OCR regions at full-resolution).
 
 ---
 
@@ -135,9 +79,8 @@ The most important call flows through the codebase:
 _build_and_run (video_indexer.py)
   └─ index_directory
        └─ index_video
-            ├─ _get_fps (shot_detector.py)
-            ├─ _grab_frames      — sequential cv2.VideoCapture decode over shot midpoints
-            ├─ _transcribe       — Whisper on full video audio, joined to shots afterward
+            ├─ _sample_frame_indices — fixed-FPS sampling via decord
+            ├─ _transcribe       — Whisper on full video audio, joined to frames afterward
             └─ _extract_text     — OCRAgent.process(keyframe_path) per keyframe
 ```
 
@@ -183,15 +126,15 @@ Used as the key in **both** TurboVec (via JSON sidecar) and Elasticsearch (as `_
 
 | Purpose | Library / Model |
 |:---|:---|
-| Shot boundary detection | `transnetv2`, `tensorflow` (CPU-forced) |
-| Frame decode | `opencv-python` (`cv2.VideoCapture`) |
+| Frame decode / sampling | `decord` or `ffmpeg` (CPU pool) |
 | Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` |
 | Vision-only embedding | `timm`, BEiT-3 `beit3_base_patch16_224.in22k_ft_in1k` |
+| Audio Event Tagging | `BEATs` or `CLAP` (GPU) |
 | ASR | `openai-whisper`, `large-v3` |
 | OCR | `google-genai`, Gemini 2.0/3.5 Flash |
+| Text & Metadata store | `elasticsearch>=8.13` (Time, Place, Audio Events) |
 | Vector store | `turbovec` (Rust, 4-bit TurboQuant) |
-| Text store | `elasticsearch>=8.13` |
-| Reranking (Phase 2) | `transformers`, BLIP-2 |
+| VLM Reranking / Judge | Gemini 2.5 Flash / Qwen3-VL (Top-50 only) |
 | Web UI | `streamlit` |
 
 ---
