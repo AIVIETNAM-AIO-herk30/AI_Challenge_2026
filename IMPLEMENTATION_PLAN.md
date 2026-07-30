@@ -71,14 +71,19 @@ def search(query: str, config: dict, top_k: int = 10) -> list[dict]:
 This is what both the eval harness (Part 2) and any UI call. Team 2 owns the implementation; Team 1 only needs to know this shape to write the eval harness without waiting for Part 4.
 
 ### 2.5 Elasticsearch Document Schema
-When Team 1 inserts text (ASR/OCR) into Elasticsearch:
+When Team 1 inserts text and metadata into Elasticsearch, they must include the following fields to enable A2's World Model Dry-run filtering (0-cost pruning):
 ```json
 {
   "frame_id": "L01_V001_0145",
   "video_id": "L01_V001",
   "timestamp_seconds": 14.5,
   "ocr_text": "Trường Đại học Bách Khoa",
-  "asr_text": "Xin chào các bạn sinh viên"
+  "asr_text": "Xin chào các bạn sinh viên",
+  "date": "2026-10-01",
+  "hour_of_day": 14,
+  "place_category": "indoor/retail",
+  "gps": {"lat": 10.7725, "lon": 106.698},
+  "audio_events": ["indoor crowd", "background music"]
 }
 ```
 
@@ -111,7 +116,7 @@ Team 1 must attach the `frame_id` alongside the vector during insertion. For FAI
 | Step | Library / Model | Phase 1 (baseline) | Phase 2 (refine) |
 |---|---|---|---|
 | Video ingestion | `pathlib` | List `data/raw/videos/*.mp4` | — |
-| Frame sampling | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` per config) — fast, predictable | **DAKE**: re-encode frames as JPEG via Pillow, score motion by size deltas, keep top-ρ frames |
+| Frame sampling | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` per config) — fast, predictable | **Embedding-Drift Segmentation**: Segment unedited scenes by measuring drift between pre-computed visual embeddings, avoiding external shot-detector dependencies. |
 | Visual embedding | `open_clip` — SigLIP `ViT-SO400M-14-384` | One embedding per keyframe, per §2.1 | — |
 | ASR | `openai-whisper` `large-v3`, `language="vi"` | Run once per video; join each keyframe's `timestamp_sec` to the Whisper segment whose `[start, end]` contains it | — |
 | OCR | `google-generativeai` Gemini `gemini-1.5-flash` | **Optional for Phase 1** — skip if time-constrained; visual embeddings drive most of KIS/AVS accuracy | Add once baseline works |
@@ -140,17 +145,21 @@ Team 1 must attach the `frame_id` alongside the vector during insertion. For FAI
 ### Part 3: Shared Agent Library (Team 2)
 **Files:** `src/agents/base_agent.py`, `visual_agent.py`, `asr_agent.py`, `ocr_agent.py`
 
-**Build this first**, even as a thin stub — Part 1 and Part 4 both depend on it.
+**Agent Memory (Alignment with BTC Buổi 3):**
+- **Semantic Memory:** `A3 (Concept Grounding)` caches object/concept descriptions to disk.
+- **Episodic Memory:** Turn logs for KISC conversational queries (`orchestrator.py` must persist state across turns).
+- **Procedural Memory:** The tools registry loaded by the Execution Engine.
 
 | Step | Library / Model | Phase 1 (baseline) | Phase 2 (refine) |
 |---|---|---|---|
 | `VisualAgent` | `open_clip` — SigLIP `ViT-SO400M-14-384` | Load model once in `__init__`; `_run({"image": path})` → embedding; `_run({"text": str})` → embedding. Both paths through the **same** loaded model (§2.1). | — |
 | `ASRAgent` | `openai-whisper`, `large-v3` | Load model once; `_run(audio_path)` → `{"text": ..., "segments": [...]}` per §2.3 | — |
-| `OCRAgent` | `google-generativeai` Gemini `gemini-1.5-flash` | `_run(image)` → extracted text string, `""` if none | — |
+| `OCRAgent` | `google-generativeai` Gemini `gemini-1.5-flash` | `_run(image)` → extracted text string, `""` if none | **ZOOM Tool:** Add crop-then-OCR at full resolution. |
+| `QueryPlanner (A2)` | LLM | Parses constraints into typed JSON. | Add **World Model Dry-run**: Call Elasticsearch `_count` to test plan feasibility before full execution (cost: ~5ms). |
 | Concurrency | `asyncio.Semaphore(max_concurrent)` | Can be skipped in Phase 1 if agents are called sequentially | Required once real concurrency is needed |
 | Latency tracking | `time.perf_counter()` in `BaseAgent.process()` | Optional in Phase 1 | Required in Phase 2 |
 
-**Output:** Three agent classes whose `process()` returns `AgentResult` per §2.3.
+**Output:** Agent classes and the A1-A6 orchestration loop returning `AgentResult`.
 
 ---
 
@@ -214,7 +223,7 @@ This means the two teams' schedules aren't serialised on "Part 1 fully done, the
 | Purpose | Library / Model | Phase |
 |---|---|---|
 | Frame sampling | `decord` | 1 |
-| Adaptive keyframing | DAKE (JPEG-size based, no model needed) | 2 |
+| Adaptive keyframing | Embedding-Drift Segmentation (custom numpy, no model needed) | 2 |
 | Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` | 1 |
 | ASR | `openai-whisper`, `large-v3` | 1 |
 | OCR | `google-generativeai`, Gemini `gemini-1.5-flash` | 1 (optional) |
