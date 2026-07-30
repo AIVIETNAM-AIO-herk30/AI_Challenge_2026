@@ -81,9 +81,57 @@ When Team 2 retrieves a `frame_id`, the Web UI needs to display the image. Team 
 
 ---
 
-## 4. Integration Strategy
+## 4. Exact Database Schema (The Merge Point)
+
+Both files live under `data/processed/embeddings/`.
+
+### 4.1 `index.faiss`
+- Type: `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` (Phase 1).
+- Populated via `index.add_with_ids(embeddings, ids)` where `ids` are the `embedding_id` values from the metadata table.
+- **Never rely on FAISS's implicit sequential ids** — always assign explicitly via `IndexIDMap` so the join with metadata stays correct even if rows are added out of order.
+
+### 4.2 `metadata.parquet`
+
+| Column | Type | Notes |
+|---|---|---|
+| `embedding_id` | `int64` | Primary key; matches the FAISS id exactly |
+| `video_id` | `string` | e.g. `L21_V001` |
+| `frame_idx` | `int64` | Frame number in source video |
+| `timestamp_sec` | `float64` | **This is what gets graded against** |
+| `keyframe_path` | `string` | Path to the extracted `.jpg` |
+| `asr_text` | `string` (nullable) | From Whisper, joined by timestamp overlap |
+| `ocr_text` | `string` (nullable) | From Gemini, per-keyframe |
+| `source_type` | `string` | `"surveillance"` / `"sousveillance"` |
+
+### 4.3 What Part 4 (Team 2) reads and returns
+- Reads: `index.faiss` + `metadata.parquet`, joined on `embedding_id`.
+- Returns (per §2.4 search signature): `{"video_id", "frame_idx", "timestamp_sec", "score"}` — a deliberate subset. The eval harness and UI only ever see this shape, never the raw Parquet columns.
+
+---
+
+## 5. Integration Strategy
 
 **Build a Golden Mini-set:** Do not wait for the entire corpus to be indexed.
-1. Team 1 indexes 10-20 videos and publishes the FAISS and Parquet files.
-2. Team 2 builds and tests Part 4 against this mini-set.
-3. Scale up to the full corpus once integration is proven.
+1. Team 1 indexes 10–20 videos and publishes `index.faiss` + `metadata.parquet` for just that subset.
+2. Team 2 builds and tests Part 4 against this mini-set while Team 1 continues indexing in parallel.
+3. Team 1's ground-truth file only needs to cover the mini-set initially — extend it once the full corpus is indexed.
+
+This means the two teams' schedules aren't serialised on "Part 1 fully done, then Part 4 can start" — they converge on the shared contract (§2) and validate it early.
+
+---
+
+## 6. Consolidated Library & Model Reference
+
+| Purpose | Library / Model | Phase |
+|---|---|---|
+| Frame sampling | `decord` | 1 |
+| Adaptive keyframing | DAKE (JPEG-size based, no model needed) | 2 |
+| Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` | 1 |
+| ASR | `openai-whisper`, `large-v3` | 1 |
+| OCR | `google-generativeai`, Gemini `gemini-1.5-flash` | 1 (optional) |
+| Vector index | `faiss-cpu` (`IndexFlatIP` → `IndexIVFFlat`) | 1 → 2 |
+| Metadata store | `pandas` (Parquet) → Milvus/Elasticsearch | 1 → 2 |
+| Hybrid text scoring | `rank_bm25` → Elasticsearch | 1 → 2 |
+| Captioning | *(none)* → ReCap-style Gemini recurrent captioning | 2 |
+| Query classification | rule-based (existing) → trained MLP | 1 → 2 |
+| Clip ranking | top-k by score → Unified Clipping Algorithm | 1 → 2 |
