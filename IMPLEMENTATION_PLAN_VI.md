@@ -70,15 +70,20 @@ def search(query: str, config: dict, top_k: int = 10) -> list[dict]:
 ```
 Đây là hàm mà cả harness đánh giá (Phần 2) và UI đều gọi. Đội 2 chịu trách nhiệm triển khai; Đội 1 chỉ cần biết định dạng này để viết harness mà không phải chờ Phần 4 hoàn thành.
 
-### 2.5 Schema Tài liệu Elasticsearch
-Khi Đội 1 chèn văn bản (ASR/OCR) vào Elasticsearch:
+### 2.5 Schema của Elasticsearch Document
+Khi Đội 1 chèn văn bản và metadata vào Elasticsearch, họ phải bao gồm các trường sau để hỗ trợ tính năng Lọc chạy thử Mô hình Thế giới (World Model Dry-run) của A2 (lọc với chi phí bằng 0):
 ```json
 {
   "frame_id": "L01_V001_0145",
   "video_id": "L01_V001",
   "timestamp_seconds": 14.5,
   "ocr_text": "Trường Đại học Bách Khoa",
-  "asr_text": "Xin chào các bạn sinh viên"
+  "asr_text": "Xin chào các bạn sinh viên",
+  "date": "2026-10-01",
+  "hour_of_day": 14,
+  "place_category": "indoor/retail",
+  "gps": {"lat": 10.7725, "lon": 106.698},
+  "audio_events": ["indoor crowd", "background music"]
 }
 ```
 
@@ -111,7 +116,7 @@ Khi Đội 1 chèn văn bản (ASR/OCR) vào Elasticsearch:
 | Bước | Thư viện / Model | Giai đoạn 1 (baseline) | Giai đoạn 2 (tinh chỉnh) |
 |---|---|---|---|
 | Đọc video | `pathlib` | Liệt kê `data/raw/videos/*.mp4` | — |
-| Lấy mẫu frame | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` theo config) — nhanh, dự đoán | **DAKE**: mã hóa lại frame thành JPEG qua Pillow, đánh giá chuyển động bằng độ lệch kích thước file, giữ top-ρ frames |
+| Lấy mẫu frame | `decord.VideoReader` | Fixed FPS (`frame_fps: 1` theo config) — nhanh, dự đoán | **Embedding-Drift Segmentation**: Phân đoạn các cảnh không qua chỉnh sửa bằng cách đo độ lệch giữa các visual embedding đã tính toán sẵn, không cần thư viện shot-detector bên ngoài. |
 | Visual embedding | `open_clip` — SigLIP `ViT-SO400M-14-384` | Một embedding mỗi keyframe, theo §2.1 | — |
 | ASR | `openai-whisper` `large-v3`, `language="vi"` | Chạy một lần dợ video; gán mỗi keyframe vào segment Whisper phù hợp theo `timestamp_sec` | — |
 | OCR | `google-generativeai` Gemini `gemini-1.5-flash` | **Tùy chọn ở Giai đoạn 1** — bỏ qua nếu bị giới hạn thời gian; visual embeddings động lực chính cho kết quả KIS/AVS | Thêm vào sau khi baseline hoạt động |
@@ -119,8 +124,6 @@ Khi Đội 1 chèn văn bản (ASR/OCR) vào Elasticsearch:
 | Kho metadata | `pandas` | Một file Parquet duy nhất — `df.to_parquet()` | Chuyển sang Milvus/Elasticsearch chỉ khi approach file-based không đáp ứng được |
 
 **Output:** `data/processed/embeddings/index.faiss` + `data/processed/embeddings/metadata.parquet`
-
----
 
 ### Phần 2: Tập dữ liệu Đánh giá & Metrics (Đội 1)
 **Files:** `src/eval.py` + `data/raw/queries/eval_ground_truth.json` (mới, chưa có stub)
@@ -214,7 +217,7 @@ Cả hai file đều nằm trong `data/processed/embeddings/`.
 | Mục đích | Thư viện / Model | Giai đoạn |
 |---|---|---|
 | Lấy mẫu frame | `decord` | 1 |
-| Lấy mẫu thích ứng | DAKE (dựa trên kích thước JPEG, không cần model) | 2 |
+| Tùy biến keyframing | Embedding-Drift Segmentation (chỉ dùng numpy, không cần model) | 2 |
 | Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` | 1 |
 | ASR | `openai-whisper`, `large-v3` | 1 |
 | OCR | `google-generativeai`, Gemini `gemini-1.5-flash` | 1 (tùy chọn) |
