@@ -1,6 +1,12 @@
-# AI Challenge 2026 — Dynamic Multi-Agent Routing via Queuing Theory
+# AI Challenge 2026 — Dynamic Multi-Agent Routing
 
-**Research Topic 3.1:** How can heterogeneous multimodal queries be dynamically routed to specialized agent worker pools using queuing theory (M/M/c model) to minimize end-to-end latency in large-scale interactive video retrieval systems?
+---
+
+## Documentation
+
+For a detailed breakdown of the system architecture and implementation plan, please see:
+- [Architecture (English)](ARCHITECTURE.md) | [Kiến trúc (Tiếng Việt)](ARCHITECTURE_VI.md)
+- [Implementation Plan (English)](IMPLEMENTATION_PLAN.md) | [Kế hoạch Triển khai (Tiếng Việt)](IMPLEMENTATION_PLAN_VI.md)
 
 ---
 
@@ -15,7 +21,7 @@ Multimodal Query (text / image / audio)
 └────────┬────────────┘
          ▼
 ┌─────────────────────┐
-│  Dynamic Dispatcher │  M/M/c queuing model — routes to optimal agent pool
+│  Dynamic Dispatcher │  routes to optimal agent pool
 └──┬──────┬─────┬─────┘
    │      │     │
    ▼      ▼     ▼
@@ -45,8 +51,7 @@ Multimodal Query (text / image / audio)
 │       ├── transcripts/        # Whisper ASR output
 │       └── ocr/                # Gemini OCR output
 ├── notebooks/
-│   ├── 01_eda_queries.ipynb    # Query distribution analysis
-│   └── 02_queuing_analysis.ipynb  # M/M/c model prototyping
+│   └── 01_eda_queries.ipynb    # Query distribution analysis
 ├── src/
 │   ├── agents/                 # Specialized agents (OCR, ASR, Visual)
 │   ├── routing/                # Query classifier + dynamic dispatcher
@@ -64,14 +69,12 @@ Multimodal Query (text / image / audio)
 
 ---
 
-## Team Members & Responsibilities
+## Team Responsibilities
 
-| # | Name | Module | Sprint 1 Task |
-|:---:|:---|:---|:---|
-| 1 | Le Nguyen Khoi | Routing & Dispatcher | EDA on query types; prototype M/M/c model |
-| 2 | Pham Viet Truong | Video Retrieval | Set up FAISS index; frame sampling pipeline |
-| 3 | Truong Hoang Thong | Agents (OCR/ASR/Visual) | Integrate Gemini, Whisper, SigLIP APIs |
-| 4 | Pham Huu Huy | Data Pipeline & Eval | Build dataset loader; query labeling script |
+| Team | Module | Sprint 1 Task |
+|:---|:---|:---|
+| **Team 1 (Data & Indexing)** | Data Pipeline, Eval, Video Retrieval | Build dataset loader; query labeling script; Set up FAISS index; frame sampling pipeline |
+| **Team 2 (Retrieval & Serving)** | Routing, Dispatcher, Agents | EDA on query types; build dynamic dispatcher; Integrate Gemini, Whisper, SigLIP APIs |
 
 ### Git Workflow
 
@@ -85,7 +88,7 @@ Format: `<type>(<scope>): <short description>`
 
 | Type | When to use | Example |
 |:---|:---|:---|
-| `feat` | Add new feature or module | `feat(routing): add Erlang-C dispatcher` |
+| `feat` | Add new feature or module | `feat(routing): add dynamic dispatcher` |
 | `fix` | Bug fix | `fix(asr): handle empty audio file` |
 | `data` | Data scripts, labeling, preprocessing | `data(loader): implement QueryDataset` |
 | `exp` | Experiment, notebook, EDA | `exp(eda): query type distribution analysis` |
@@ -99,7 +102,7 @@ Format: `<type>(<scope>): <short description>`
 # Examples
 git commit -m "feat(agents): implement OCRAgent with Gemini Vision API"
 git commit -m "data(loader): add query labeling script for sprint 1"
-git commit -m "exp(queuing): prototype M/M/c E[W] simulation notebook"
+git commit -m "exp(routing): prototype dispatcher logic in notebook"
 git commit -m "fix(vector-store): normalize embeddings before FAISS add"
 ```
 
@@ -136,6 +139,5 @@ export GOOGLE_API_KEY="your-gemini-key"
 
 ## References
 
-- Kleinrock, L. (1975). *Queueing Systems, Vol. 1* — M/M/c model
 - Zhai et al. (2023). *Sigmoid Loss for Language Image Pre-Training* — SigLIP
 - Radford et al. (2022). *Robust Speech Recognition via Large-Scale Weak Supervision* — Whisper

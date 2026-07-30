@@ -2,7 +2,7 @@
 End-to-end inference: query -> classify -> dispatch -> retrieve video frames.
 Owner: Truong Hoang Thong
 
-Phase 1 (docs/IMPLEMENTATION_PLAN.md §6): classify the query with the
+Phase 1 (IMPLEMENTATION_PLAN.md §6): classify the query with the
 existing rule-based classifier, embed it via VisualAgent (text mode)
 through the dispatcher, search the FAISS index built by Part 1, and — only
 for queries the classifier flags as OCR/ASR/HYBRID — rerank the top
@@ -79,7 +79,7 @@ def _get_context(config: dict) -> tuple[dict, VectorStore]:
 def _hybrid_rerank(
     query: str, candidates: list[dict], store: VectorStore, visual_weight: float = 0.7
 ) -> list[dict]:
-    """Phase 1 optional step (docs/IMPLEMENTATION_PLAN.md §6): blend visual
+    """Phase 1 optional step (IMPLEMENTATION_PLAN.md §6): blend visual
     similarity with a BM25 score against stored asr_text/ocr_text for
     queries the classifier flagged as OCR/ASR/HYBRID."""
     from rank_bm25 import BM25Okapi
