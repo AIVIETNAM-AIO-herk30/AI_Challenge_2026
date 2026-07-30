@@ -2,11 +2,11 @@
 OCR Agent using Gemini Vision API.
 Owner: Truong Hoang Thong
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3):
+Contract (IMPLEMENTATION_PLAN.md §2.3):
   output = extracted text string, "" if none found (never None — downstream
   code should not have to null-check this).
 
-Phase 1 note (docs/IMPLEMENTATION_PLAN.md §3): calling this agent during
+Phase 1 note (IMPLEMENTATION_PLAN.md §3): calling this agent during
 indexing is OPTIONAL — visual embeddings drive most of the baseline
 accuracy, OCR mainly helps queries that reference on-screen text/signs.
 Skip it if API budget or time is tight; VideoIndexer already treats a
