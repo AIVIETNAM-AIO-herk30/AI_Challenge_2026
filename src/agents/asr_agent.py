@@ -2,10 +2,10 @@
 ASR Agent using Whisper (local inference).
 Owner: Truong Hoang Thong
 
-Contract (docs/IMPLEMENTATION_PLAN.md §2.3):
+Contract (IMPLEMENTATION_PLAN.md §2.3):
   output = {"text": str, "segments": [{"start": float, "end": float, "text": str}]}
 
-Note (2026 dataset shift, docs/ARCHITECTURE.md §1): egocentric/wearable-camera
+Note (2026 dataset shift, ARCHITECTURE.md §1): egocentric/wearable-camera
 audio is noisier than 2025's broadcast TV — expect lower-confidence
 transcripts and possibly empty segments on ambient-noise-only stretches.
 That's expected; the caller (VideoIndexer) treats missing asr_text as null,

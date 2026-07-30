@@ -1,0 +1,38 @@
+# Agent & AI tracking
+.claude/
+AGENTS.md
+CLAUDE.md
+.gitnexus/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project-specific Data & Checkpoints
+weights/
+data/processed/
+data/raw/videos/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg

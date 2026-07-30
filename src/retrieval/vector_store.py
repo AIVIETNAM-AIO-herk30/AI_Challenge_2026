@@ -2,7 +2,7 @@
 FAISS vector store for video frame embeddings.
 Owner: Pham Viet Truong
 
-Phase 1 (docs/IMPLEMENTATION_PLAN.md §3, §7): brute-force exact search via
+Phase 1 (IMPLEMENTATION_PLAN.md §3, §7): brute-force exact search via
 IndexFlatIP wrapped in IndexIDMap, so embedding_id stays explicit and
 stable — no train() step required for this index type, which removes a
 whole class of "forgot to train before add" bugs. Swap in IndexIVFFlat
@@ -10,7 +10,7 @@ whole class of "forgot to train before add" bugs. Swap in IndexIVFFlat
 makes brute-force too slow; the IndexIDMap wrapper and the rest of this
 class's interface don't need to change.
 
-Metadata schema (docs/IMPLEMENTATION_PLAN.md §7.2) — one row per keyframe,
+Metadata schema (IMPLEMENTATION_PLAN.md §7.2) — one row per keyframe,
 keyed by embedding_id, which must match the FAISS id exactly:
   embedding_id, video_id, frame_idx, timestamp_sec, keyframe_path,
   asr_text, ocr_text, source_type
@@ -83,7 +83,7 @@ class VectorStore:
 
     def get_text_fields(self, video_id: str, frame_idx: int) -> dict[str, str | None]:
         """
-        Used by the Phase 1 optional hybrid rerank (docs/IMPLEMENTATION_PLAN.md
+        Used by the Phase 1 optional hybrid rerank (IMPLEMENTATION_PLAN.md
         §6) to fetch stored asr_text/ocr_text for a candidate hit without
         widening the frozen search() return shape (§7.3).
         """
