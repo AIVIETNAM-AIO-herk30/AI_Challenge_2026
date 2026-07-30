@@ -12,58 +12,31 @@ For a detailed breakdown of the system architecture and implementation plan, ple
 
 ## Architecture Overview
 
-```
-Multimodal Query (text / image / audio)
-          │
-          ▼
-┌─────────────────────┐
-│  Query Classifier   │  Lightweight MLP — classifies query type & complexity
-└────────┬────────────┘
-         ▼
-┌─────────────────────┐
-│  Dynamic Dispatcher │  routes to optimal agent pool
-└──┬──────┬─────┬─────┘
-   │      │     │
-   ▼      ▼     ▼
-┌──────┐ ┌─────┐ ┌────────┐
-│ OCR  │ │ ASR │ │ Visual │
-│Agent │ │Agent│ │ Agent  │
-│Gemini│ │Whis.│ │ SigLIP │
-└──────┘ └─────┘ └────┬───┘
-                       ▼
-              ┌─────────────────┐
-              │  FAISS Vector   │
-              │  Store (GPU)    │
-              └─────────────────┘
-```
+This project implements an **Agent-guided Multimodal Pipeline** with **Temporal Event Reasoning** to solve the AIC 2026 Known-Item Search (KIS) and Conversational KIS challenges.
+
+The system is split into two phases:
+1. **Offline Indexing:** Videos are chunked using TransNet V2, audio is transcribed by Whisper, and keyframes are embedded by dual encoders (SigLIP and BEiT-3) and OCR'd by Gemini.
+2. **Online Retrieval:** A GPT-4o Agent Router expands text queries and routes weights across Vector Stores (TurboVec/FAISS) and Text Stores (Elasticsearch). Temporal Beam Search and BLIP-2 cross-encoding rerank the final results.
+
+> **Note:** For the full Mermaid diagrams, data flows, and tech stack details, please see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
 ## Directory Structure
 
-```
-├── data/
-│   ├── raw/
-│   │   ├── videos/             # Raw video files (.mp4)
-│   │   └── queries/            # Query dataset (JSON)
-│   └── processed/
-│       ├── embeddings/         # SigLIP frame embeddings
-│       ├── transcripts/        # Whisper ASR output
-│       └── ocr/                # Gemini OCR output
-├── notebooks/
-│   └── 01_eda_queries.ipynb    # Query distribution analysis
-├── src/
-│   ├── agents/                 # Specialized agents (OCR, ASR, Visual)
-│   ├── routing/                # Query classifier + dynamic dispatcher
-│   ├── retrieval/              # FAISS vector store + video indexer
-│   ├── data_loader.py          # Dataset & preprocessing
-│   ├── model.py                # Model architectures
-│   ├── train.py                # Training pipeline
-│   └── inference.py            # End-to-end inference
+```text
 ├── configs/
 │   └── config.yaml             # All hyperparameters (no hardcoding)
-├── weights/                    # Model checkpoints
-├── requirements.txt
+├── src/
+│   ├── agents/                 # Shared wrappers: asr, ocr, visual, base
+│   ├── retrieval/              # Indexing: video_indexer, vector_store
+│   ├── routing/                # Online: classifier, dispatcher
+│   ├── ui/                     # Streamlit frontend (app.py)
+│   ├── eval.py                 # Evaluation harness & metrics
+│   └── inference.py            # End-to-end online search entry point
+├── Dockerfile                  # Containerization
+├── docker-compose.yml          # Multi-container orchestration (ES, etc.)
+├── pyproject.toml              # Modern Python packaging
 └── README.md
 ```
 
@@ -73,7 +46,7 @@ Multimodal Query (text / image / audio)
 
 | Team | Module | Sprint 1 Task |
 |:---|:---|:---|
-| **Team 1 (Data & Indexing)** | Data Pipeline, Eval, Video Retrieval | Build dataset loader; query labeling script; Set up FAISS index; frame sampling pipeline |
+| **Team 1 (Data & Indexing)** | Data Pipeline, Eval, Video Retrieval | Build dataset loader; query labeling script; Set up TurboVec/FAISS indices; frame sampling pipeline |
 | **Team 2 (Retrieval & Serving)** | Routing, Dispatcher, Agents | EDA on query types; build dynamic dispatcher; Integrate Gemini, Whisper, SigLIP APIs |
 
 ### Git Workflow
@@ -116,7 +89,7 @@ cd AI_Challenge_2026
 python -m venv venv
 source venv/bin/activate      # Linux/macOS
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .              # Install via pyproject.toml
 ```
 
 Set API keys:
