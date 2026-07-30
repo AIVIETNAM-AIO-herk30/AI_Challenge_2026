@@ -21,108 +21,52 @@ Dữ liệu 2026 giới thiệu bài toán Conversational Known-Item Search, b�
 
 ---
 
-## 2. Các Nhóm Chức năng (GitNexus Clusters)
+## 2. Các Khu vực Chức năng (GitNexus Clusters)
 
-Codebase được tổ chức thành **3 functional clusters**:
+Cơ sở mã có **3 cụm chức năng chính** được xác định bằng phân tích tĩnh:
 
-| Cluster | Vai trò |
+| Cụm | Vai trò |
 |:---|:---|
-| **Agents** | Tất cả model wrappers (SigLIP, BEiT-3, Whisper, Gemini, BaseAgent) |
-| **Retrieval** | Shot boundary detection, video indexing pipeline, FAISS/TurboVec store, Elasticsearch store |
-| **Routing** | Query classifier, rule-based classify, dynamic dispatcher |
+| **Agents (A1-A6)** | Hệ thống đa agent điều phối việc suy luận, bộ nhớ và lập kế hoạch. |
+| **Truy xuất (Retrieval)** | Lập chỉ mục video, kho lưu trữ TurboVec, kho lưu trữ Elasticsearch. |
+| **Giao diện & Phản hồi (UI & Feedback)** | Phản hồi mức độ liên quan, giới hạn đa dạng (diversity caps), và khám phá/khai phá concept. |
 
-### 🧩 A. Agents
-- **BaseAgent:** Base class cung cấp cơ chế kiểm soát đồng thời và đo lường độ trễ (latency).
-- **VisualAgent:** Mã hóa cả **hình ảnh lẫn văn bản** vào chung một không gian embedding 1152-d thông qua **SigLIP ViT-SO400M-14-384**.
-- **BEiT3Agent:** Bộ mã hóa chỉ dành cho hình ảnh 768-d sử dụng **BEiT-3 base_patch16_224**.
-- **ASRAgent:** Chạy **Whisper large-v3** cục bộ; trích xuất văn bản từ âm thanh.
-- **OCRAgent:** Gọi **API Gemini 2.0/3.5 Flash**; trích xuất văn bản từ hình ảnh.
+### 🧩 A. Hệ thống 6-Agent (Đội 2)
+Hệ thống truy xuất trực tuyến được điều khiển bởi sáu agent chuyên biệt:
+- **A1 (Task Router):** Phân loại truy vấn (KIS, AVS, VQA, KISC) và điều hướng luồng thực thi.
+- **A2 (Query Planner):** Tạo đối tượng ràng buộc kiểu (trọng số modality, thứ tự thời gian). Thực thi chạy thử (dry-run) bằng ES `_count` để tránh các truy vấn quá chặt (0 kết quả).
+- **A3 (Concept Grounding):** Bộ nhớ ngữ nghĩa (semantic cache). Mở rộng concept thành các mô tả thị giác chi tiết.
+- **A4 (Temporal Verifier):** Kiểm tra các ràng buộc thời gian ("bước vào phòng, rồi cởi mũ").
+- **A5 (VLM Judge):** Cross-encoder reranker trên top-50 ứng viên, có quyền phủ quyết (hard veto).
+- **A6 (Clarification Agent):** Dành cho KISC. Tính toán entropy trên tập ứng viên để hỏi người dùng một câu hỏi làm rõ tối ưu nhất.
 
-### 🗄️ B. Retrieval & Storage
-- **ShotDetector:** Bọc mô hình **TransNet V2** để phát hiện ranh giới cảnh quay (shot boundaries).
-- **VideoIndexer:** Bộ điều phối offline pipeline.
-- **Vector Store (FAISS/Turbovec):** Lưu trữ các embedding hình ảnh.
-- **Elasticsearch Store:** Kho lưu trữ văn bản dạng chỉ mục đảo ngược (inverted-index) cho văn bản OCR/ASR.
+### 🗄️ B. Truy xuất & Lưu trữ (Đội 1)
+- **VideoIndexer:** Trình điều phối pipeline offline (Tách biệt CPU/GPU/API pool).
+- **Kho lưu trữ Vector (FAISS/Turbovec):** Lưu trữ các visual embedding.
+- **Kho lưu trữ Elasticsearch:** Lưu trữ siêu dữ liệu, OCR/ASR, **thời gian, địa điểm, và sự kiện âm thanh**.
 
-### 🧠 C. Routing & Classification
-- **rule_based_classify:** Bộ phân loại truy vấn theo từ khóa ở Giai đoạn 1.
-- **QueryClassifier:** Bộ phân loại MLP cho Giai đoạn 2.
-- **DynamicDispatcher:** Ánh xạ truy vấn tới các agent cụ thể và chạy chúng song song.
+### 💻 C. Giao diện & Phản hồi
+- **Giới hạn Đa dạng (Diversity Cap):** Giới hạn kết quả trả về ≤2 sự kiện mỗi video trên trang đầu.
+- **"More Like This" (Tìm ảnh tương tự):** Truy vấn bằng hình ảnh sử dụng vector có sẵn (không tốn chi phí model).
+- **Phản hồi Rocchio:** Phản hồi mức độ liên quan để cập nhật vector truy vấn mà không chịu độ trễ của LLM.
 
 ---
 
-## 3. Đường ống Kiến trúc Agentic (Agentic Pipeline)
+## 3. Pipeline Kiến trúc Agentic
 
-Hệ thống đã triển khai một **Agent-guided Multimodal Pipeline** (Đường ống Đa phương thức điều hướng bởi Agent) kết hợp với **Temporal Event Reasoning** (Suy luận Sự kiện theo thời gian).
+Chúng tôi đã triển khai **Pipeline Đa phương thức điều hướng bởi Agent (Agent-guided Multimodal Pipeline)** kết hợp với khả năng **Suy luận Sự kiện Thời gian** và khung **Suy luận Không-Thời gian (STAR)** dành cho VQA.
 
-### Agentic Pipeline khác gì so với Ad-hoc hoặc Zero-shot?
-- **Hệ thống Zero-shot / Ad-hoc:** Thường hoạt động theo một chuỗi cứng nhắc duy nhất (VD: "Nhận câu truy vấn $\rightarrow$ biến thành vector $\rightarrow$ tìm trong database $\rightarrow$ trả về kết quả"). Chúng không thể tự sửa lỗi, không thể chia nhỏ các truy vấn phức tạp, và không biết đặt câu hỏi làm rõ.
-- **Agentic Pipeline (Đường ống hướng Agent):** Hoạt động một cách linh hoạt. Khi nhận một truy vấn, bộ điều phối (thường là LLM) sẽ quyết định gọi *những sub-agent chuyên biệt nào* (Visual, ASR, OCR). Nó có thể mở rộng câu truy vấn, kết hợp nhiều loại hình dữ liệu (modalities) tùy theo ngữ cảnh. Quan trọng nhất, đối với bài toán KISC mới, nó có thể đo lường độ nhiễu (entropy) trong tập kết quả dự tuyển và **đặt câu hỏi ngược lại cho người dùng** để làm rõ thông tin trước khi đưa ra câu trả lời cuối cùng.
+### Lập chỉ mục Offline (Đội 1)
+1. **Decode Phân tán (Fan-Out Decoding):** `ffmpeg` giải mã các frame (chạy trên CPU pool) và track âm thanh một lần duy nhất.
+2. **Gắn thẻ Sự kiện Âm thanh:** `BEATs` hoặc `CLAP` trích xuất sự kiện âm thanh (ví dụ: "tiếng giao thông", "tiếng nấu ăn") để cung cấp ưu tiên mạnh mẽ về vị trí/hoạt động khi ASR thất bại trên video egocentric.
+3. **Phân đoạn Embedding-Drift:** Thay thế phát hiện ranh giới cảnh quay truyền thống. Chúng tôi phân đoạn các cảnh quay không qua chỉnh sửa bằng cách đo độ lệch (drift) giữa các visual embedding đã tính toán (Liên kết Cảnh Tương tự).
+4. **Lập chỉ mục Siêu dữ liệu:** Mỗi sự kiện được lưu trong Elasticsearch cùng với các bộ lọc cắt tỉa (pruning) quan trọng: `date` (ngày), `hour_of_day` (giờ), `place_category` (loại địa điểm), và `audio_events` (sự kiện âm thanh).
 
-```mermaid
-flowchart TD
-    subgraph Team1 ["🗄️ Team 1: Data Preparation & Indexing (Offline)"]
-        direction TB
-
-        RAW["📹 Video AIC 2026"]
-
-        RAW --> SD["🎬 ShotDetector\n(TransNet V2)"]
-        SD -->|"Shot boundaries"| VI["⚙️ VideoIndexer\n(Pipeline Orchestrator)"]
-
-        RAW -->|"Raw audio"| ASR["🎤 ASRAgent\n(Whisper large-v3)"]
-        ASR -->|"segments"| VI
-
-        VI -->|"Keyframe images"| SigLIP["🖼️ VisualAgent\n(SigLIP — 1152-d)"]
-        VI -->|"Keyframe images"| BEiT3["🧠 BEiT3Agent\n(BEiT-3 — 768-d)"]
-        VI -->|"Keyframe images"| OCR["📝 OCRAgent\n(Gemini 2.0/3.5 Flash)"]
-
-        SigLIP -->|"float32 L2-normalised"| TVS[("💾 FAISS/TurboVec\nSigLIP Index")]
-        BEiT3  -->|"float32 L2-normalised"| TVB[("💾 FAISS/TurboVec\nBEiT-3 Index")]
-
-        VI -->|"temporal overlap"| ESW[("🔎 Elasticsearch\ntrường asr_text")]
-        OCR -->|"ocr_text string"| ESO[("🔎 Elasticsearch\ntrường ocr_text")]
-    end
-
-    subgraph Team2 ["🧠 Đội 2: NLP, Xử lý Truy vấn & Truy xuất (Online)"]
-        direction TB
-
-        TQ["👤 User Text Query"]
-
-        TQ --> LLM["🤖 Agent Router\nQuery Expansion & Routing"]
-
-        LLM -->|"Trọng số visual"| TVS
-        LLM -->|"Trọng số visual"| TVB
-        LLM -->|"Trọng số text/audio"| ESW
-        LLM -->|"Trọng số text/audio"| ESO
-
-        TVS -->|"(frame_id, score)"| SRRF["📊 Score-Reflected\nReciprocal Rank Fusion"]
-        TVB -->|"(frame_id, score)"| SRRF
-        ESW -->|"(frame_id, BM25 score)"| SRRF
-        ESO -->|"(frame_id, BM25 score)"| SRRF
-
-        SRRF --> TBS["⏱️ Temporal Beam Search\n(hệ số giảm mũ)"]
-
-        TBS -->|"Chuỗi ứng viên"| BLIP["🔬 BLIP-2 Reranker\n(Cross-Encoder)"]
-
-        BLIP --> ASF["🎯 Adaptive Score Fusion\n(chuẩn hóa Min-Max)"]
-        ASF --> FINAL["🏆 Kết quả Xếp hạng Cuối\n{video_id, timestamp_seconds, score}"]
-    end
-```
-
-### Giai đoạn 1: Lập chỉ mục Offline (Đội 1)
-1. **Phát hiện ranh giới cảnh quay:** `ShotDetector` chạy **TransNet V2** (chỉ dùng hình ảnh) để định vị các điểm cắt cảnh, tạo ra các đối tượng `Shot` chứa số frame và thời điểm tính bằng giây.
-2. **Trích xuất Keyframe:** `VideoIndexer` lấy frame giữa mỗi cảnh quay thông qua một lần đọc tuần tự bằng `cv2.VideoCapture`.
-3. **ASR — Toàn bộ âm thanh Video:** `ASRAgent` (Whisper large-v3) phiên âm toàn bộ audio của video một lần duy nhất. Các đoạn văn bản có mốc thời gian sau đó được ánh xạ vào từng cảnh quay thông qua hàm `_join_asr_to_shot()`.
-4. **Mã hóa hình ảnh kép:** Mỗi keyframe được mã hóa bởi **VisualAgent** (SigLIP, 1152-d) và **BEiT3Agent** (BEiT-3, 768-d). Cả hai vector đều được chuẩn hóa L2 trước khi lưu trữ.
-5. **OCR:** Mỗi keyframe được gửi đến **Gemini OCR** để trích xuất văn bản hiển thị trên màn hình.
-6. **Lưu trữ:** Vector SigLIP + BEiT-3 → hai `TurbovecStore`. Văn bản ASR + OCR + timestamp → `ElasticsearchStore` với `frame_id` làm document `_id`.
-
-### Giai đoạn 2: Truy xuất Online (Đội 2)
-1. **Phân tách truy vấn bằng Agent:** Người dùng gửi một câu truy vấn phức tạp. Agent Router mở rộng và phân bổ trọng số cho từng nguồn dữ liệu (Visual, OCR, ASR).
-2. **Tìm kiếm song song:** Hệ thống truy vấn đồng thời Elasticsearch và cả hai kho TurboVec.
-3. **Temporal Beam Search:** Giải quyết bài toán Temporal Logic. Thuật toán Beam Search với hệ số giảm mũ `exp(-alpha * dt)` ghép nối các frame rời rạc thành các chuỗi sự kiện liền mạch, phạt những frame cách nhau quá xa về thời gian.
-4. **Xếp hạng lại chi tiết:** Các chuỗi ứng viên hàng đầu được đưa qua bộ cross-encoder **BLIP-2** để đối chiếu hình ảnh-văn bản chính xác.
-5. **Adaptive Score Fusion:** Điểm số cuối được chuẩn hóa Min-Max và tổng hợp theo trọng số của router.
+### Truy xuất Online & VQA (Đội 2)
+1. **Lập kế hoạch Truy vấn bằng Agent:** `A2` mở rộng truy vấn và phân bổ trọng số động giữa hình ảnh, OCR, và âm thanh. Nó sử dụng cơ chế **Chạy thử Mô hình Thế giới (World Model Dry-run)** bằng cách gọi ES `_count` để linh hoạt nới lỏng hoặc siết chặt các ràng buộc trước khi thực thi.
+2. **Tìm kiếm Song song:** Hệ thống truy vấn Elasticsearch (Metadata + Văn bản) và TurboVec (Hình ảnh) đồng thời thông qua `asyncio.gather`, đi kèm với timeout riêng biệt cho từng công cụ (tool).
+3. **Làm rõ KISC bằng Entropy:** Đối với truy vấn hội thoại, `A6` tính toán entropy của các khía cạnh (facet) như trong nhà/ngoài trời trên tập ứng viên. Sau đó nó hỏi người dùng một câu hỏi xoáy vào facet có entropy cao nhất để cắt đôi không gian tìm kiếm.
+4. **Khung VQA STAR:** Đối với Video QA, một Planner điều phối các **Công cụ Thời gian** (mở rộng cửa sổ thời gian) và **Công cụ Không gian** (bao gồm một **công cụ ZOOM** để cắt ảnh và OCR vùng đó ở độ phân giải gốc đầy đủ).
 
 ---
 
@@ -135,9 +79,8 @@ Các luồng gọi hàm quan trọng nhất trong codebase:
 _build_and_run (video_indexer.py)
   └─ index_directory
        └─ index_video
-            ├─ _get_fps (shot_detector.py)
-            ├─ _grab_frames      — đọc frame tuần tự qua cv2.VideoCapture
-            ├─ _transcribe       — Whisper chạy trên toàn bộ audio, rồi ghép vào cảnh
+            ├─ _sample_frame_indices — fixed-FPS sampling qua decord
+            ├─ _transcribe       — Whisper chạy trên toàn bộ audio, rồi ghép vào frame
             └─ _extract_text     — OCRAgent.process(keyframe_path) cho từng keyframe
 ```
 
@@ -183,15 +126,15 @@ Dùng làm khóa trong **cả hai** TurboVec (qua file JSON sidecar) và Elastic
 
 | Mục đích | Thư viện / Model |
 |:---|:---|
-| Phát hiện ranh giới cảnh quay | `transnetv2`, `tensorflow` (buộc chạy CPU) |
-| Đọc frame | `opencv-python` (`cv2.VideoCapture`) |
+| Đọc và lấy mẫu frame | `decord` hoặc `ffmpeg` (CPU pool) |
 | Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` |
 | Vision-only embedding | `timm`, BEiT-3 `beit3_base_patch16_224.in22k_ft_in1k` |
+| Gắn thẻ Sự kiện Âm thanh | `BEATs` hoặc `CLAP` (GPU) |
 | ASR | `openai-whisper`, `large-v3` |
 | OCR | `google-genai`, Gemini 2.0/3.5 Flash |
-| Kho vector | `turbovec` (Rust, 4-bit TurboQuant) |
-| Kho văn bản | `elasticsearch>=8.13` |
-| Xếp hạng lại (Giai đoạn 2) | `transformers`, BLIP-2 |
+| Kho Metadata & Văn bản | `elasticsearch>=8.13` (Gồm Thời gian, Địa điểm, Sự kiện Âm thanh) |
+| Kho Vector | `turbovec` (Rust, 4-bit TurboQuant) |
+| Reranker / Judge VLM | Gemini 2.5 Flash / Qwen3-VL (Chỉ Top-50) |
 | Web UI | `streamlit` |
 
 ---
