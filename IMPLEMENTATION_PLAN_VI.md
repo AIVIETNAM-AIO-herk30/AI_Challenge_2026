@@ -81,9 +81,57 @@ Khi Đội 2 lấy được `frame_id`, Web UI cần hiển thị hình ảnh. �
 
 ---
 
-## 4. Chiến lược Tích hợp
+## 4. Schema Cơ sở Dữ liệu Chính xác (Điểm Hội tụ)
+
+Cả hai file đều nằm trong `data/processed/embeddings/`.
+
+### 4.1 `index.faiss`
+- Kiểu: `faiss.IndexIDMap(faiss.IndexFlatIP(1152))` (Giai đoạn 1).
+- Thêm dữ liệu bằng `index.add_with_ids(embeddings, ids)` với `ids` là các giá trị `embedding_id` từ bảng metadata.
+- **Không bao giờ dùng ID tuần tự ngầm định của FAISS** — luôn gán tường minh qua `IndexIDMap` để join với metadata luôn chính xác dù các dòng được thêm không theo thứ tự.
+
+### 4.2 `metadata.parquet`
+
+| Cột | Kiểu dữ liệu | Ghi chú |
+|---|---|---|
+| `embedding_id` | `int64` | Khóa chính; khớp chính xác với id trong FAISS |
+| `video_id` | `string` | VD: `L21_V001` |
+| `frame_idx` | `int64` | Số frame trong video gốc |
+| `timestamp_sec` | `float64` | **Đây là giá trị được dùng để chấm điểm** |
+| `keyframe_path` | `string` | Đường dẫn đến file `.jpg` |
+| `asr_text` | `string` (nullable) | Từ Whisper, ghép qua temporal overlap |
+| `ocr_text` | `string` (nullable) | Từ Gemini, theo từng keyframe |
+| `source_type` | `string` | `"surveillance"` / `"sousveillance"` |
+
+### 4.3 Phần 4 (Đội 2) đọc và trả về gì
+- Đọc: `index.faiss` + `metadata.parquet`, join theo `embedding_id`.
+- Trả về (theo chữ ký hàm §2.4): `{"video_id", "frame_idx", "timestamp_sec", "score"}` — một tập con có chủ đích. Harness đánh giá và UI chỉ nhìn thấy định dạng này, không bao giờ thấy các cột Parquet thô.
+
+---
+
+## 5. Chiến lược Tích hợp
 
 **Xây dựng Tập con Vàng (Golden Mini-set):** Đừng đợi đến khi toàn bộ dữ liệu được lập chỉ mục xong.
-1. Đội 1 lập chỉ mục trước 10-20 video và xuất các tệp FAISS và Parquet.
-2. Đội 2 xây dựng và kiểm thử Phần 4 dựa trên tập con này.
-3. Khi việc tích hợp đã được xác nhận thành công, tiến hành mở rộng (scale up) cho toàn bộ tập dữ liệu.
+1. Đội 1 lập chỉ mục trước 10–20 video và xuất `index.faiss` + `metadata.parquet` chỉ cho tập con đó.
+2. Đội 2 xây dựng và kiểm thử Phần 4 dựa trên tập con này trong khi Đội 1 tiếp tục lập chỉ mục song song.
+3. File ground-truth của Đội 1 chỉ cần bao phủ tập con ban đầu — mở rộng sau khi toàn bộ dữ liệu được lập chỉ mục xong.
+
+Điều này có nghĩa là lịch làm việc của hai đội không bị xếp hàng theo kiểu "Phần 1 xong hết rồi Phần 4 mới bắt đầu" — cả hai đội hội tụ tại hợp đồng chung (§2) và xác nhận nó sớm trên một phần nhỏ dữ liệu.
+
+---
+
+## 6. Bảng Thư viện & Model Tổng hợp
+
+| Mục đích | Thư viện / Model | Giai đoạn |
+|---|---|---|
+| Lấy mẫu frame | `decord` | 1 |
+| Lấy mẫu thích ứng | DAKE (dựa trên kích thước JPEG, không cần model) | 2 |
+| Visual embedding | `open-clip-torch`, SigLIP `ViT-SO400M-14-384` | 1 |
+| ASR | `openai-whisper`, `large-v3` | 1 |
+| OCR | `google-generativeai`, Gemini `gemini-1.5-flash` | 1 (tùy chọn) |
+| Chỉ mục vector | `faiss-cpu` (`IndexFlatIP` → `IndexIVFFlat`) | 1 → 2 |
+| Kho metadata | `pandas` (Parquet) → Milvus/Elasticsearch | 1 → 2 |
+| Tìm kiếm văn bản hybrid | `rank_bm25` → Elasticsearch | 1 → 2 |
+| Captioning | *(không có)* → ReCap-style Gemini captioning | 2 |
+| Phân loại truy vấn | rule-based (hiện có) → trained MLP | 1 → 2 |
+| Xếp hạng clip | top-k theo điểm → Unified Clipping Algorithm | 1 → 2 |
