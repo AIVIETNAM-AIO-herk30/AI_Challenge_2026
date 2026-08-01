@@ -1,6 +1,6 @@
 """
 ASR Agent using Whisper (local inference).
-Owner: Truong Hoang Thong
+Owner: Truong Hoang Thong / Team 1
 
 Contract (IMPLEMENTATION_PLAN.md §2.3):
   output = {"text": str, "segments": [{"start": float, "end": float, "text": str}]}
