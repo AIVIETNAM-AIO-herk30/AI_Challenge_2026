@@ -35,11 +35,14 @@ class VisualAgent(BaseAgent):
     ):
         super().__init__("visual", max_concurrent)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._use_fp16 = self.device.startswith("cuda")
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, pretrained=pretrained
         )
         self.tokenizer = open_clip.get_tokenizer(model_name)
-        self.model = self.model.half().to(self.device).eval()
+        self.model = self.model.to(self.device).eval()
+        if self._use_fp16:
+            self.model = self.model.half()
 
     async def _run(self, payload: dict) -> np.ndarray:
         if "image" in payload:
@@ -50,7 +53,9 @@ class VisualAgent(BaseAgent):
 
     def _encode_image(self, image: str | Path | Image.Image) -> np.ndarray:
         img = image if isinstance(image, Image.Image) else Image.open(image).convert("RGB")
-        tensor = self.preprocess(img).unsqueeze(0).half().to(self.device)
+        tensor = self.preprocess(img).unsqueeze(0).to(self.device)
+        if self._use_fp16:
+            tensor = tensor.half()
         with torch.no_grad():
             features = self.model.encode_image(tensor)
         return self._normalize(features)

@@ -72,6 +72,42 @@ class ElasticsearchStore:
             return None
         return result["_source"] if result.get("found") else None
 
+    def get_many_by_frame_ids(self, frame_ids: list[str]) -> dict[str, dict]:
+        """Fetch frame metadata in one request, keyed by ``frame_id``.
+
+        Vector retrieval returns frame IDs while Elasticsearch owns the
+        user-facing metadata (video ID and timestamp).  Keeping this lookup
+        batched avoids one network request per candidate.
+        """
+        if not frame_ids:
+            return {}
+        result = self._client.mget(index=self._index_name, ids=frame_ids)
+        return {
+            doc["_id"]: doc["_source"]
+            for doc in result["docs"]
+            if doc.get("found") and "_source" in doc
+        }
+
+    def search_text(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
+        """Return BM25 matches across OCR and ASR text, ranked by ES score."""
+        if not query.strip() or top_k < 1:
+            return []
+        result = self._client.search(
+            index=self._index_name,
+            size=top_k,
+            query={
+                "multi_match": {
+                    "query": query,
+                    "fields": ["ocr_text^2", "asr_text"],
+                    "type": "best_fields",
+                }
+            },
+        )
+        return [
+            (hit["_id"], float(hit.get("_score") or 0.0))
+            for hit in result["hits"]["hits"]
+        ]
+
     def scan_all(self) -> list[dict]:
         """All indexed docs — fine at mini-set scale (a handful of videos).
         Used by scripts/verify_index.py to sample frame_ids per video without

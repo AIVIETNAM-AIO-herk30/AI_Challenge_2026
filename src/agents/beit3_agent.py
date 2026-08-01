@@ -49,8 +49,11 @@ class BEiT3Agent(BaseAgent):
     ):
         super().__init__("beit3", max_concurrent)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._use_fp16 = self.device.startswith("cuda")
         self.model = timm.create_model(model_name, pretrained=True, num_classes=0)
-        self.model = self.model.half().to(self.device).eval()
+        self.model = self.model.to(self.device).eval()
+        if self._use_fp16:
+            self.model = self.model.half()
 
         data_cfg = timm.data.resolve_data_config({}, model=self.model)
         self.transform = timm.data.create_transform(**data_cfg, is_training=False)
@@ -67,7 +70,9 @@ class BEiT3Agent(BaseAgent):
 
     def _encode_image(self, image: str | Path | Image.Image) -> np.ndarray:
         img = image if isinstance(image, Image.Image) else Image.open(image).convert("RGB")
-        tensor = self.transform(img).unsqueeze(0).half().to(self.device)
+        tensor = self.transform(img).unsqueeze(0).to(self.device)
+        if self._use_fp16:
+            tensor = tensor.half()
         with torch.no_grad():
             features = self.model(tensor)
         return self._normalize(features)
