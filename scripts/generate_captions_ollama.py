@@ -16,6 +16,7 @@ Requires `ollama serve` running locally with the model already pulled:
 import argparse
 import base64
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -82,6 +83,19 @@ def generate_caption(
     return data["response"].strip()
 
 
+def free_ollama(model: str) -> None:
+    """Unload the model and kill its underlying llama-server subprocess.
+
+    Ollama's server was observed to leak memory across many sequential
+    requests (each /api/generate logs a "prompt_save ... total state size"
+    that never shrinks -- see plan notes), eventually triggering a real OOM
+    kill after a few hundred images. `ollama stop` forces that subprocess to
+    exit, so the next request spawns a fresh one with clean memory -- no
+    sudo/systemctl restart needed, just a short reload delay on the next call.
+    """
+    subprocess.run(["ollama", "stop", model], capture_output=True, timeout=30)
+
+
 def run(
     video_id: str,
     json_dir: Path,
@@ -93,6 +107,7 @@ def run(
     limit: int | None,
     checkpoint_every: int,
     overwrite: bool,
+    restart_every: int,
 ) -> None:
     json_path = json_dir / f"{video_id}.json"
     keyframe_dir = keyframe_root / video_id
@@ -127,6 +142,14 @@ def run(
             json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
             print(f"  [checkpoint] wrote progress ({i}/{total}) to {json_path}")
 
+        # Ollama's server was observed to leak memory across many sequential
+        # requests, eventually OOM-crashing after a few hundred images (see
+        # plan notes). Force a fresh subprocess periodically to reset that.
+        if restart_every and i % restart_every == 0 and i < total:
+            free_ollama(model)
+            print(f"  [free-ollama] stopped {model} after {i} images to reset memory "
+                  f"(next call will reload it)")
+
     elapsed = time.time() - t_start
     if total:
         print(f"Done: {total} captions in {elapsed:.1f}s ({elapsed / total:.2f}s/keyframe avg)")
@@ -158,6 +181,10 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite", action="store_true",
                          help="Re-caption keyframes that already have a caption "
                               "(default: skip them, to resume a crashed run)")
+    parser.add_argument("--restart-every", type=int, default=50,
+                         help="Run `ollama stop` every N images (default: 50) to reset "
+                              "the server's per-request memory growth before it can OOM "
+                              "the whole service. Use 0 to disable.")
     args = parser.parse_args()
 
     run(
@@ -171,4 +198,5 @@ if __name__ == "__main__":
         limit=args.limit,
         checkpoint_every=args.checkpoint_every,
         overwrite=args.overwrite,
+        restart_every=args.restart_every,
     )
