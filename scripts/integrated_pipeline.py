@@ -250,7 +250,7 @@ def run_asr_join(records: list[dict], asr_path: Path, window_sec: float) -> None
 
 
 # ---------------------------------------------------------------------------
-# Step 4: ReCap (text-only, grouped, qwen2.5:3b-instruct)
+# Step 4: ReCap (text-only, grouped, qwen3-vl:4b-instruct)
 # ---------------------------------------------------------------------------
 
 RECAP_LINE_RE = re.compile(r"RECAP\s+(\d+):\s*(.+?)(?=RECAP\s+\d+:|MEMORY:|$)", re.DOTALL)
