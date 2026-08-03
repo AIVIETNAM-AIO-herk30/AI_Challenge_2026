@@ -9,6 +9,7 @@ models (qwen3-vl:4b, moondream, ...) can be compared side by side.
 import argparse
 import base64
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -46,6 +47,10 @@ def _call_ollama(image_path: Path, model: str, ollama_url: str, num_predict: int
     return response.json()
 
 
+def free_ollama(model: str) -> None:
+    subprocess.run(["ollama", "stop", model], capture_output=True, timeout=30)
+
+
 def caption_one(
     image_path: Path,
     model: str,
@@ -62,11 +67,24 @@ def caption_one(
         budget *= 2
         retries += 1
         data = _call_ollama(image_path, model, ollama_url, budget, keep_alive)
+
+    degenerate = False
+    if data.get("done") is False:
+        # Known Ollama bug (github.com/ollama/ollama#17270): model degenerates
+        # into repeating one character -> Ollama's "token repeat" abort
+        # returns done=False/no eval_count instead of an error, AND corrupts
+        # the shared llama-server slot so every later request fails too until
+        # restarted. Restart, retry once; if still degenerate, give up on it.
+        free_ollama(model)
+        data = _call_ollama(image_path, model, ollama_url, budget, keep_alive)
+        degenerate = data.get("done") is False
+
     elapsed = time.time() - t0
     return {
         "elapsed_sec": round(elapsed, 2),
         "caption": data["response"].strip(),
         "truncated": data.get("done_reason") == "length",
+        "degenerate": degenerate,
         "retries": retries,
         "eval_count": data.get("eval_count"),
     }
@@ -88,13 +106,18 @@ def run(
     print(f"[bench] model={model} video_id={video_id} n={len(image_paths)}")
     results = []
     for i, image_path in enumerate(image_paths, start=1):
-        n = int(image_path.stem)
+        # image_path.stem works for both the organizer's numeric keyframe
+        # naming ("042") and the TransNetV2+DAKE naming ("L21_V001_000363")
+        # -- kept as a string id instead of int() so this script isn't tied
+        # to one keyframe source.
+        frame_id = image_path.stem
         r = caption_one(image_path, model, ollama_url, num_predict, keep_alive)
-        r["n"] = n
+        r["n"] = frame_id
         results.append(r)
-        flag = f" [TRUNCATED after {r['retries']} retries]" if r["truncated"] else (
-            f" [retried {r['retries']}x]" if r["retries"] else "")
-        print(f"[{i}/{len(image_paths)}] n={n:03d} ({r['elapsed_sec']}s){flag} -> {r['caption']}")
+        flag = f" [DEGENERATE, gave up after restart]" if r["degenerate"] else (
+            f" [TRUNCATED after {r['retries']} retries]" if r["truncated"] else (
+            f" [retried {r['retries']}x]" if r["retries"] else ""))
+        print(f"[{i}/{len(image_paths)}] n={frame_id} ({r['elapsed_sec']}s){flag} -> {r['caption']}")
 
     times = [r["elapsed_sec"] for r in results]
     summary = {
@@ -107,6 +130,7 @@ def run(
         "min_sec": min(times),
         "max_sec": max(times),
         "num_truncated": sum(1 for r in results if r["truncated"]),
+        "num_degenerate": sum(1 for r in results if r["degenerate"]),
     }
     print(f"Summary: {summary}")
 

@@ -1,12 +1,14 @@
 """
 Integrated pipeline: video -> keyframe (TransNetV2+DAKE) -> caption
-(qwen2.5vl:3b) -> ASR join -> ReCap (qwen2.5:3b-instruct, text-only, grouped).
+(qwen3-vl:4b-instruct) -> ASR join -> ReCap (qwen2.5:3b-instruct, text-only, grouped).
 
 For each video in --video-dir:
   [1/4] Extract keyframes via scripts/keyframe/transnetv2_dake_keyframes.py's run()
         (skipped if data/keyframe/{video_id}/ already has images)
-  [2/4] Caption each keyframe with qwen2.5vl:3b (vision, NOT a thinking model
-        like qwen3-vl -- lower num_predict, less retry pressure expected)
+  [2/4] Caption each keyframe with qwen3-vl:4b-instruct (vision; the "-instruct"
+        tag skips qwen3-vl's chain-of-thought "thinking" step, so it runs at
+        speed comparable to qwen2.5vl:3b while avoiding its hallucinations --
+        see benchmark_qwen3-vl-4b-instruct_L21_V001_n10.json)
   [3/4] Join ASR context per keyframe from data/asr/{video_id}.json's
         raw_segments (fixed +/-window; NOT `intervals`, which is currently
         empty for every video -- group_asr_segments.py was never built)
@@ -18,11 +20,11 @@ For each video in --video-dir:
 
 Output: data/integrated/{video_id}.json
 {
-  "video_id": ..., "caption_model": "qwen2.5vl:3b",
+  "video_id": ..., "caption_model": "qwen3-vl:4b-instruct",
   "recap_model": "qwen2.5:3b-instruct",
   "keyframes": [
     {"frame_id":..., "frame_idx":..., "timestamp_sec":..., "shot_index":...,
-     "image_path":..., "caption":..., "caption_status": "ok"|"empty"|"truncated",
+     "image_path":..., "caption":..., "caption_status": "ok"|"empty"|"truncated"|"degenerate",
      "asr_context":..., "recap":..., "_memory_after":...},
     ...
   ]
@@ -48,7 +50,7 @@ DEFAULT_ASR_DIR = "data/asr"
 DEFAULT_KEYFRAME_DIR = "data/keyframe"
 DEFAULT_OUTPUT_DIR = "data/integrated"
 DEFAULT_MODEL_DIR = "weights/transnetv2/"
-DEFAULT_CAPTION_MODEL = "qwen2.5vl:3b"
+DEFAULT_CAPTION_MODEL = "qwen3-vl:4b-instruct"
 DEFAULT_RECAP_MODEL = "qwen2.5:3b-instruct"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
@@ -156,13 +158,26 @@ def ensure_keyframes(video_path: Path, video_id: str, keyframe_dir: Path,
 
 
 # ---------------------------------------------------------------------------
-# Step 2: captioning (qwen2.5vl:3b)
+# Step 2: captioning (qwen3-vl:4b-instruct)
 # ---------------------------------------------------------------------------
 
 def caption_keyframe(image_path: Path, model: str, ollama_url: str, num_predict: int,
                       num_ctx: int, max_retries: int = 2) -> tuple[str, str]:
     """Returns (caption, caption_status). Not a thinking model, so truncation
-    should be rarer than qwen3-vl, but still retry with doubled budget."""
+    should be rarer than qwen3-vl, but still retry with doubled budget.
+
+    Ollama has a known bug (github.com/ollama/ollama#17270): if the model
+    degenerates into repeating the same character (e.g. all "?" -- seen in
+    practice on some low-content/graphic keyframes), Ollama's internal
+    "token repeat" abort returns done=False with no eval_count instead of a
+    real error -- AND that aborted request corrupts the shared llama-server
+    slot's KV state, so every subsequent request (even for a different,
+    previously-fine image) fails identically until the llama-server
+    subprocess is restarted. Verified: changing temperature/repeat_penalty
+    does NOT avoid this for an affected image. So on done=False we restart
+    (free_ollama) before the one retry, not just retry in place -- and if
+    it's still degenerate after that, give up on this frame rather than
+    looping forever."""
     budget = num_predict
     data = _call_ollama(CAPTION_PROMPT, model, ollama_url, budget, num_ctx, [encode_image(image_path)])
     retries = 0
@@ -170,6 +185,15 @@ def caption_keyframe(image_path: Path, model: str, ollama_url: str, num_predict:
         budget *= 2
         retries += 1
         data = _call_ollama(CAPTION_PROMPT, model, ollama_url, budget, num_ctx, [encode_image(image_path)])
+
+    if data.get("done") is False:
+        print(f"  [warn] {image_path.name}: model degenerated (done=False, likely a repeat-token "
+              f"abort, see ollama/ollama#17270) -- restarting {model} to clear the corrupted slot")
+        free_ollama(model)
+        data = _call_ollama(CAPTION_PROMPT, model, ollama_url, budget, num_ctx, [encode_image(image_path)])
+        if data.get("done") is False:
+            print(f"  [warn] {image_path.name}: still degenerate after restart -- giving up on this frame")
+            return "", "degenerate"
 
     text = data["response"].strip()
     if not text:
@@ -408,8 +432,9 @@ if __name__ == "__main__":
     parser.add_argument("--recap-model", default=DEFAULT_RECAP_MODEL)
     parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--caption-num-predict", type=int, default=300,
-                         help="qwen2.5vl is NOT a thinking model, so this can start much "
-                              "lower than qwen3-vl's 400-700 (default: 300)")
+                         help="qwen3-vl:4b-instruct skips the thinking step, so this can "
+                              "stay as low as qwen2.5vl's budget instead of the 400-700 "
+                              "needed by qwen3-vl's default (thinking) tag (default: 300)")
     parser.add_argument("--recap-num-predict-per-item", type=int, default=150,
                          help="Per-keyframe token budget within a recap group call "
                               "(total budget = this * group_size + 200 for memory)")

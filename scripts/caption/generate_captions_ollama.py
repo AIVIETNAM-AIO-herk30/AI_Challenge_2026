@@ -80,6 +80,21 @@ def generate_caption(
     if data.get("done_reason") == "length":
         print(f"  [warn] {image_path.name}: still truncated after {max_retries} retries "
               f"(num_predict={budget}) -- keeping partial response")
+
+    if data.get("done") is False:
+        # Known Ollama bug (github.com/ollama/ollama#17270): model degenerates
+        # into repeating one character -> Ollama's "token repeat" abort
+        # returns done=False/no eval_count instead of an error, AND corrupts
+        # the shared llama-server slot so every later request fails too until
+        # restarted. Restart, retry once; if still degenerate, give up on it.
+        print(f"  [warn] {image_path.name}: model degenerated (done=False, likely a repeat-token "
+              f"abort, see ollama/ollama#17270) -- restarting {model} to clear the corrupted slot")
+        free_ollama(model)
+        data = _call_ollama(image_path, model, ollama_url, budget, keep_alive)
+        if data.get("done") is False:
+            print(f"  [warn] {image_path.name}: still degenerate after restart -- giving up on this frame")
+            return ""
+
     return data["response"].strip()
 
 
