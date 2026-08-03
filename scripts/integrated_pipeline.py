@@ -3,7 +3,7 @@ Integrated pipeline: video -> keyframe (TransNetV2+DAKE) -> caption
 (qwen2.5vl:3b) -> ASR join -> ReCap (qwen2.5:3b-instruct, text-only, grouped).
 
 For each video in --video-dir:
-  [1/4] Extract keyframes via scripts/transnetv2_dake_keyframes.py's run()
+  [1/4] Extract keyframes via scripts/keyframe/transnetv2_dake_keyframes.py's run()
         (skipped if data/keyframe/{video_id}/ already has images)
   [2/4] Caption each keyframe with qwen2.5vl:3b (vision, NOT a thinking model
         like qwen3-vl -- lower num_predict, less retry pressure expected)
@@ -41,7 +41,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.transnetv2_dake_keyframes import run as extract_keyframes_run  # noqa: E402
+from scripts.keyframe.transnetv2_dake_keyframes import run as extract_keyframes_run  # noqa: E402
 
 DEFAULT_VIDEO_DIR = "data/test_1video"
 DEFAULT_ASR_DIR = "data/asr"
@@ -130,9 +130,13 @@ def _call_ollama(prompt: str, model: str, ollama_url: str, num_predict: int,
 # ---------------------------------------------------------------------------
 
 def ensure_keyframes(video_path: Path, video_id: str, keyframe_dir: Path,
-                      model_dir: Path) -> list[dict]:
+                      model_dir: Path, caption_model: str, recap_model: str) -> list[dict]:
     out_dir = keyframe_dir / video_id
     if not (out_dir.exists() and any(out_dir.glob("*.jpg"))):
+        print(f"[1/4] {video_id}: freeing Ollama models before CPU-heavy "
+              f"TransNetV2+DAKE extraction...")
+        free_ollama(caption_model)
+        free_ollama(recap_model)
         print(f"[1/4] extracting keyframes for {video_id} (TransNetV2+DAKE)...")
         extract_keyframes_run(
             video_path=video_path, output_dir=keyframe_dir, model_dir=model_dir,
@@ -351,7 +355,8 @@ def process_video(
                 "recap_model": recap_model, "keyframes": []}
         by_frame_id = {}
 
-    fresh_records = ensure_keyframes(video_path, video_id, keyframe_dir, model_dir)
+    fresh_records = ensure_keyframes(video_path, video_id, keyframe_dir, model_dir,
+                                      caption_model, recap_model)
     records = []
     for fr in fresh_records:
         r = by_frame_id.get(fr["frame_id"], fr)

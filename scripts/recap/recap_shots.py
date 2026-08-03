@@ -31,7 +31,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 # Reuse the tuned prompt/parsing/retry/free-ollama logic as-is -- only the
 # grouping stage (shots vs raw keyframes) differs between the two scripts.
