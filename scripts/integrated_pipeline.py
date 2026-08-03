@@ -1,6 +1,6 @@
 """
 Integrated pipeline: video -> keyframe (TransNetV2+DAKE) -> caption
-(qwen3-vl:4b-instruct) -> ASR join -> ReCap (qwen2.5:3b-instruct, text-only, grouped).
+(qwen3-vl:4b-instruct) -> ASR join -> ReCap (qwen3-vl:4b-instruct, text-only, grouped).
 
 For each video in --video-dir:
   [1/4] Extract keyframes via scripts/keyframe/transnetv2_dake_keyframes.py's run()
@@ -13,15 +13,17 @@ For each video in --video-dir:
         raw_segments (fixed +/-window; NOT `intervals`, which is currently
         empty for every video -- group_asr_segments.py was never built)
   [4/4] ReCap: group consecutive keyframes (--recap-group-size), send their
-        captions+asr_context+running memory to qwen2.5:3b-instruct
-        (text-only) in ONE call per group, producing an enriched recap per
-        keyframe + one updated memory for the group. Falls back to
-        per-keyframe recap calls if the group response doesn't parse.
+        captions+asr_context+running memory to qwen3-vl:4b-instruct
+        (text-only prompt, no images -- same model as captioning so Ollama
+        never has to swap the loaded model between steps [2/4] and [4/4]) in
+        ONE call per group, producing an enriched recap per keyframe and one
+        updated memory for the group. Falls back to per-keyframe recap calls
+        if the group response doesn't parse.
 
 Output: data/integrated/{video_id}.json
 {
   "video_id": ..., "caption_model": "qwen3-vl:4b-instruct",
-  "recap_model": "qwen2.5:3b-instruct",
+  "recap_model": "qwen3-vl:4b-instruct",
   "keyframes": [
     {"frame_id":..., "frame_idx":..., "timestamp_sec":..., "shot_index":...,
      "image_path":..., "caption":..., "caption_status": "ok"|"empty"|"truncated"|"degenerate",
@@ -51,7 +53,7 @@ DEFAULT_KEYFRAME_DIR = "data/keyframe"
 DEFAULT_OUTPUT_DIR = "data/integrated"
 DEFAULT_MODEL_DIR = "weights/transnetv2/"
 DEFAULT_CAPTION_MODEL = "qwen3-vl:4b-instruct"
-DEFAULT_RECAP_MODEL = "qwen2.5:3b-instruct"
+DEFAULT_RECAP_MODEL = "qwen3-vl:4b-instruct"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 CAPTION_PROMPT = (
