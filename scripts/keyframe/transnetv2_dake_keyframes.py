@@ -184,6 +184,70 @@ def color_hist_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
 
 
 # =============================================================================
+# THÊM MỚI (v3): gate lọc trùng lặp NGỮ NGHĨA bằng CLIP -- bắt case pHash/color
+# bỏ sót: zoom/pan mượt trên cùng một cảnh tĩnh. pHash không bất biến với
+# zoom (DCT nhạy với thay đổi bố cục do zoom), nên nhiều candidate ở các mức
+# zoom khác nhau của CÙNG một cảnh vẫn bị coi là "đủ khác nhau" và bị giữ dư
+# thừa. CLIP embedding học biểu diễn "đây là cảnh gì" nên bất biến với
+# zoom/scale tốt hơn nhiều.
+#
+# Model: CLIP ViT-B/32 (qua open_clip, KHÔNG import VisualAgent/SigLIP từ
+# src/agents/ -- file này tự khai là standalone, không import src/, xem
+# docstring đầu file). open_clip_torch đã là dependency có sẵn trong
+# pyproject.toml.
+# =============================================================================
+@dataclass
+class ClipHandle:
+    model: object
+    preprocess: object
+    device: str
+    use_fp16: bool
+
+
+def load_clip_model(device: str | None = None) -> ClipHandle:
+    """Lazy-import torch/open_clip bên trong hàm, giống pattern detect_shots()
+    lazy-import tensorflow/transnetv2 -- không tốn thời gian import khi gate
+    bị tắt (--disable-clip-gate)."""
+    import open_clip
+    import torch
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    # "-quickgelu" khớp đúng kiến trúc gốc OpenAI đã train pretrained="openai"
+    # (không dùng thì open_clip cảnh báo quick_gelu mismatch, embedding lệch nhẹ).
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32-quickgelu", pretrained="openai"
+    )
+    model = model.to(device).eval()
+    use_fp16 = device.startswith("cuda")
+    if use_fp16:
+        model = model.half()
+    return ClipHandle(model=model, preprocess=preprocess, device=device, use_fp16=use_fp16)
+
+
+def frame_clip_embedding(frame_bgr: np.ndarray, clip: ClipHandle) -> np.ndarray:
+    """L2-normalized CLIP image embedding cho 1 frame -- mirror đúng pattern
+    frame_phash() cho phần BGR->RGB->PIL, và VisualAgent._encode_image()/
+    _normalize() (src/agents/visual_agent.py) cho phần forward+normalize."""
+    import torch
+    from PIL import Image as PILImage
+
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    tensor = clip.preprocess(PILImage.fromarray(frame_rgb)).unsqueeze(0).to(clip.device)
+    if clip.use_fp16:
+        tensor = tensor.half()
+    with torch.no_grad():
+        features = clip.model.encode_image(tensor)
+    vec = features.squeeze(0).float().cpu().numpy()
+    norm = np.linalg.norm(vec)
+    return (vec / norm).astype(np.float32) if norm > 0 else vec.astype(np.float32)
+
+
+def clip_cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    """Cả 2 vector đã L2-normalize sẵn nên cosine similarity = dot product."""
+    return float(np.dot(a, b))
+
+
+# =============================================================================
 # THAY ĐỔI: measure_frame_sizes() (v1) -> measure_frame_features() (v2).
 # Vẫn 1 lượt decode duy nhất, nhưng giờ tính CẢ BA tín hiệu (size, phash,
 # color-hist) từ CÙNG một pixel buffer trước khi discard, và áp dụng mask
@@ -197,14 +261,30 @@ def measure_frame_features(
     phash_size: int,
     color_bins: int,
     apply_overlay_mask: bool,
+    clip_gate_enabled: bool,
+    clip: ClipHandle | None,
     log_every: int = 5000,
-) -> tuple[dict[int, int], dict[int, imagehash.ImageHash], dict[int, np.ndarray]]:
+) -> tuple[dict[int, int], dict[int, imagehash.ImageHash], dict[int, np.ndarray], dict[int, np.ndarray]]:
     """Pass 1: single sequential decode. For each frame, compute JPEG size,
-    perceptual hash, and color histogram, then discard the pixel buffer."""
+    perceptual hash, color histogram, and (if clip_gate_enabled) a CLIP
+    embedding -- all from the same pixel buffer -- then discard the buffer.
+
+    CLIP is computed for EVERY frame here (not lazily per shot-candidate):
+    this loop already scans 0..max_frame_idx (the max end_frame across ALL
+    shots, i.e. effectively the whole video) regardless of which frames end
+    up being DAKE candidates, so there is no real "lazy" saving to have. The
+    alternative (computing CLIP only for shot-ranked candidates inside
+    dake_select_keyframes) is not viable: that function runs AFTER this pass
+    discards the pixel buffer, and this file deliberately never seeks
+    (cv2.CAP_PROP_POS_FRAMES is not frame-accurate across H.264 GOPs) -- so a
+    true lazy version would need a whole extra decode pass, or a circular
+    two-pass estimation scheme (the set of candidates that need CLIP depends
+    on the CLIP gate's own output)."""
     cap = cv2.VideoCapture(str(video_path))
     sizes: dict[int, int] = {}
     phashes: dict[int, imagehash.ImageHash] = {}
     color_hists: dict[int, np.ndarray] = {}
+    clip_embs: dict[int, np.ndarray] = {}
     idx = 0
     try:
         while idx <= max_frame_idx:
@@ -217,13 +297,15 @@ def measure_frame_features(
             sizes[idx] = jpeg_size(frame_for_signals, jpeg_quality)
             phashes[idx] = frame_phash(frame_for_signals, phash_size)
             color_hists[idx] = color_histogram(frame_for_signals, color_bins)
+            if clip_gate_enabled:
+                clip_embs[idx] = frame_clip_embedding(frame_for_signals, clip)
 
             idx += 1
             if idx % log_every == 0:
                 print(f"      ... {idx}/{max_frame_idx + 1} frames measured")
     finally:
         cap.release()
-    return sizes, phashes, color_hists
+    return sizes, phashes, color_hists, clip_embs
 
 
 # =============================================================================
@@ -235,6 +317,7 @@ def dake_select_keyframes(
     frame_sizes: dict[int, int],
     frame_phashes: dict[int, imagehash.ImageHash],
     frame_color_hists: dict[int, np.ndarray],
+    frame_clip_embs: dict[int, np.ndarray],
     shot: Shot,
     window: int,
     keyframe_ratio: float,
@@ -242,16 +325,20 @@ def dake_select_keyframes(
     min_gap_frames: int,
     phash_dup_hamming_threshold: int,
     color_dup_bhattacharyya_threshold: float,
+    clip_gate_enabled: bool,
+    clip_dup_cosine_threshold: float,
 ) -> list[dict]:
     """DAKE: rank candidate frames trong 1 shot theo aggregated JPEG-size
     steepness (như v1, không đổi), nhưng giờ chỉ NHẬN 1 candidate nếu nó đủ
     khác biệt so với MỌI keyframe đã chọn trong cùng shot -- theo CẢ HAI
     tiêu chí min_gap_frames (khoảng cách thời gian) VÀ is_duplicate (cấu
-    trúc + màu, xem bên dưới).
+    trúc + màu, hoặc ngữ nghĩa CLIP -- xem bên dưới).
 
-    is_duplicate = (phash gần)  AND  (color-hist gần)
-    -- tức là bị loại chỉ khi giống CẢ cấu trúc LẪN màu; khác 1 trong 2 thì
-    vẫn được giữ (xem CHANGELOG #3 ở đầu file)."""
+    is_duplicate = ((phash gần) AND (color-hist gần)) OR (clip_gate_enabled
+    AND CLIP cosine similarity đủ cao)
+    -- tức là bị loại nếu giống CẢ cấu trúc LẪN màu (khác 1 trong 2 thì vẫn
+    giữ, xem CHANGELOG #3 ở đầu file), HOẶC nếu CLIP nhận ra cùng là 1 cảnh
+    (bắt case zoom/pan mượt mà pHash không bất biến -- xem CHANGELOG #4)."""
     indices = [i for i in range(shot.start_frame, shot.end_frame + 1) if i in frame_sizes]
     if len(indices) <= min_keyframes_per_shot:
         return [
@@ -283,10 +370,17 @@ def dake_select_keyframes(
         if any(abs(i - s) < min_gap_frames for s in selected):
             continue
 
-        # THÊM MỚI: gate lọc trùng lặp theo cấu trúc + màu.
+        # THÊM MỚI: gate lọc trùng lặp theo cấu trúc + màu, HOẶC theo ngữ
+        # nghĩa CLIP (bắt case zoom/pan mượt mà pHash+color bỏ sót).
         is_duplicate_of_existing = any(
-            (frame_phashes[i] - frame_phashes[s] <= phash_dup_hamming_threshold)
-            and (color_hist_distance(frame_color_hists[i], frame_color_hists[s]) <= color_dup_bhattacharyya_threshold)
+            (
+                (frame_phashes[i] - frame_phashes[s] <= phash_dup_hamming_threshold)
+                and (color_hist_distance(frame_color_hists[i], frame_color_hists[s]) <= color_dup_bhattacharyya_threshold)
+            )
+            or (
+                clip_gate_enabled
+                and clip_cosine_sim(frame_clip_embs[i], frame_clip_embs[s]) >= clip_dup_cosine_threshold
+            )
             for s in selected
         )
         if is_duplicate_of_existing:
@@ -373,6 +467,8 @@ def run(
     color_bins: int,
     color_dup_bhattacharyya_threshold: float,
     apply_overlay_mask: bool,
+    clip_gate_enabled: bool = False,
+    clip_dup_cosine_threshold: float = 0.85,
 ) -> None:
     video_id = video_path.stem
     native_fps = get_fps(video_path)
@@ -382,20 +478,29 @@ def run(
     shots = detect_shots(video_path, model_dir, threshold, min_shot_duration_sec)
     print(f"      -> {len(shots)} shots")
 
+    clip: ClipHandle | None = None
+    if clip_gate_enabled:
+        print("      loading CLIP ViT-B/32 (openai) for semantic dup gate ...")
+        clip = load_clip_model()
+        print(f"      -> loaded on {clip.device} (fp16={clip.use_fp16})")
+
     max_frame_idx = max((s.end_frame for s in shots), default=0)
     print(
-        f"[2/4] Pass 1: measuring JPEG-size / pHash / color-hist for frames "
+        f"[2/4] Pass 1: measuring JPEG-size / pHash / color-hist"
+        f"{' / CLIP' if clip_gate_enabled else ''} for frames "
         f"0..{max_frame_idx} (overlay mask={'on' if apply_overlay_mask else 'off'}) ..."
     )
-    frame_sizes, frame_phashes, frame_color_hists = measure_frame_features(
-        video_path, max_frame_idx, jpeg_quality, phash_size, color_bins, apply_overlay_mask
+    frame_sizes, frame_phashes, frame_color_hists, frame_clip_embs = measure_frame_features(
+        video_path, max_frame_idx, jpeg_quality, phash_size, color_bins, apply_overlay_mask,
+        clip_gate_enabled, clip,
     )
     print(f"      -> measured {len(frame_sizes)} frames")
 
     print(
         f"[3/4] DAKE: selecting keyframes per shot "
         f"(min_gap={min_gap_frames} frames, phash_thresh={phash_dup_hamming_threshold}, "
-        f"color_thresh={color_dup_bhattacharyya_threshold}) ..."
+        f"color_thresh={color_dup_bhattacharyya_threshold}, "
+        f"clip_gate={'on,thresh=' + str(clip_dup_cosine_threshold) if clip_gate_enabled else 'off'}) ..."
     )
     selected: dict[int, dict] = {}
     for shot_index, shot in enumerate(shots):
@@ -403,6 +508,7 @@ def run(
             frame_sizes,
             frame_phashes,
             frame_color_hists,
+            frame_clip_embs,
             shot,
             dake_window,
             dake_keyframe_ratio,
@@ -410,10 +516,11 @@ def run(
             min_gap_frames,
             phash_dup_hamming_threshold,
             color_dup_bhattacharyya_threshold,
+            clip_gate_enabled,
+            clip_dup_cosine_threshold,
         )
         for pick in picks:
-            selected[pick["frame_idx"]] = {
-                **pick,
+            pick_extra = {
                 "shot_index": shot_index,
                 "shot_start_frame": shot.start_frame,
                 "shot_end_frame": shot.end_frame,
@@ -425,6 +532,9 @@ def run(
                 "phash_dup_hamming_threshold": phash_dup_hamming_threshold,
                 "color_dup_bhattacharyya_threshold": color_dup_bhattacharyya_threshold,
             }
+            if clip_gate_enabled:
+                pick_extra["clip_dup_cosine_threshold"] = clip_dup_cosine_threshold
+            selected[pick["frame_idx"]] = {**pick, **pick_extra}
     print(f"      -> {len(selected)} keyframes selected across {len(shots)} shots")
 
     print(f"[4/4] Pass 2: saving keyframe images + per-keyframe JSON to {output_dir / video_id} ...")
@@ -473,6 +583,19 @@ if __name__ == "__main__":
         help="Tắt việc che vùng logo/giờ + banner tên MC trước khi tính tín hiệu -- bật cờ này nếu "
         "dùng dataset không có layout overlay giống HTV9, hoặc muốn so sánh có/không mask.",
     )
+
+    # THÊM MỚI (v3): gate ngữ nghĩa CLIP -- bắt case zoom/pan mượt mà pHash/color bỏ sót.
+    parser.add_argument(
+        "--dake-clip-dup-threshold", type=float, default=0.85, dest="clip_dup_cosine_threshold",
+        help="Ngưỡng cosine similarity (CLIP ViT-B/32) coi là 'cùng 1 cảnh' (0=khác hoàn toàn, "
+        "1=giống hệt). Mặc định 0.85 đo thật trên ví dụ zoom-out L21_V001 frame ~1905-2044 "
+        "(gộp 6 keyframe trùng lặp xuống 2) -- cần tự đo lại nếu dữ liệu khác nhiều.",
+    )
+    parser.add_argument(
+        "--disable-clip-gate", action="store_true",
+        help="Tắt gate ngữ nghĩa CLIP -- dùng để so sánh trước/sau, hoặc khi không có GPU/muốn "
+        "extraction nhanh hơn (CLIP forward pass chạy trên MỌI frame trong Pass 1).",
+    )
     args = parser.parse_args()
 
     run(
@@ -491,4 +614,6 @@ if __name__ == "__main__":
         color_bins=args.color_bins,
         color_dup_bhattacharyya_threshold=args.color_dup_bhattacharyya_threshold,
         apply_overlay_mask=not args.disable_overlay_mask,
+        clip_gate_enabled=not args.disable_clip_gate,
+        clip_dup_cosine_threshold=args.clip_dup_cosine_threshold,
     )
