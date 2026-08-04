@@ -149,6 +149,7 @@ def ensure_keyframes(video_path: Path, video_id: str, keyframe_dir: Path,
             dake_min_gap_sec=0.5, jpeg_quality=90, phash_size=8,
             phash_dup_hamming_threshold=8, color_bins=8,
             color_dup_bhattacharyya_threshold=0.3, apply_overlay_mask=True,
+            clip_gate_enabled=True,
         )
     else:
         print(f"[1/4] {video_id}: keyframes already extracted, skipping")
