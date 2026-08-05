@@ -7,6 +7,7 @@ data:
   video_dir: data/raw/videos/
   keyframe_dir: data/keyframes/
   shots_cache_dir: data/interim/shots/
+  integrated_dir: data/fullRecap/   # scripts/integrated_pipeline.py output (via main.py), read by src/retrieval/caption_indexer.py
 
 transnetv2:
   model_dir: weights/transnetv2/   # fetch via scripts/fetch_transnetv2_weights.sh (pip's git install

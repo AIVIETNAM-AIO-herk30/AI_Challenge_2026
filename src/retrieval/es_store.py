@@ -24,6 +24,8 @@ class ElasticsearchStore:
             "timestamp_seconds": {"type": "float"},
             "ocr_text": {"type": "text"},
             "asr_text": {"type": "text"},
+            "caption": {"type": "text"},
+            "recap": {"type": "text"},
         }
     }
 
@@ -65,6 +67,28 @@ class ElasticsearchStore:
         ]
         bulk(self._client, actions)
 
+    def bulk_upsert_captions(self, docs: list[dict]) -> None:
+        """Merge caption/recap fields into existing per-frame docs.
+
+        Unlike bulk_upsert() (full _source replace), this uses a partial
+        update so frames already indexed with ocr_text/asr_text by
+        video_indexer.py don't lose those fields when captions/recaps are
+        indexed afterwards -- and vice versa if this runs first.
+        """
+        if not docs:
+            return
+        actions = [
+            {
+                "_op_type": "update",
+                "_index": self._index_name,
+                "_id": doc["frame_id"],
+                "doc": doc,
+                "doc_as_upsert": True,
+            }
+            for doc in docs
+        ]
+        bulk(self._client, actions)
+
     def get_by_frame_id(self, frame_id: str) -> dict | None:
         try:
             result = self._client.get(index=self._index_name, id=frame_id)
@@ -99,6 +123,31 @@ class ElasticsearchStore:
                 "multi_match": {
                     "query": query,
                     "fields": ["ocr_text^2", "asr_text"],
+                    "type": "best_fields",
+                }
+            },
+        )
+        return [
+            (hit["_id"], float(hit.get("_score") or 0.0))
+            for hit in result["hits"]["hits"]
+        ]
+
+    def search_caption(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
+        """Return BM25 matches across recap/caption text, ranked by ES score.
+
+        Same shape as search_text() -- matches the SearchFn contract
+        (query_text, top_k) -> list[(frame_id, score)] expected by
+        retrieve_and_fuse()'s caption channel (llm_pipeline.py).
+        """
+        if not query.strip() or top_k < 1:
+            return []
+        result = self._client.search(
+            index=self._index_name,
+            size=top_k,
+            query={
+                "multi_match": {
+                    "query": query,
+                    "fields": ["recap^2", "caption"],
                     "type": "best_fields",
                 }
             },
