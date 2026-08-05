@@ -1,7 +1,7 @@
 """
 Caption/recap indexing -- builds the TextualDB vector store.
 
-Reads scripts/integrated_pipeline.py's output (data/integrate/integrated/{video_id}.json),
+Reads scripts/integrated_pipeline.py's output (data/fullRecap/{video_id}.json),
 embeds each keyframe's recap (fallback: caption) with the same SigLIP text
 tower used to embed queries at search time (src/inference.py), so caption
 vectors land in the same 1152-dim joint space as the image embeddings built
@@ -105,7 +105,7 @@ async def _build_and_run(config: dict) -> None:
         es_store=es_store,
     )
 
-    integrated_dir = config.get("data", {}).get("integrated_dir", "data/integrate/integrated/")
+    integrated_dir = config.get("data", {}).get("integrated_dir", "data/fullRecap/")
     reports = await indexer.index_directory(integrated_dir)
     for r in reports:
         print(f"{r.video_id}: {r.n_keyframes} keyframes, {len(r.frame_ids)} captions indexed, {len(r.errors)} errors")

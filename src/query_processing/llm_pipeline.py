@@ -52,6 +52,7 @@ class TaskType(str, Enum):
     AVS = "AVS"
     VQA = "VQA"
     KISC = "KISC"
+    TRAKE = "TRAKE"
 
 
 class VerificationLevel(str, Enum):
@@ -189,6 +190,23 @@ class TemporalSlots(BaseModel):
     after: TemporalSlot | None = None
 
 
+class EventStep(BaseModel):
+    """One ordered semantic keyframe target within a TRAKE event sequence.
+
+    Unlike TemporalSlots (fixed before/current/after), TRAKE queries describe
+    an arbitrary-length ordered chain of moments (e.g. the 4-step high-jump
+    example in the AIC2026 rules: approach/take-off/clearance/landing), so
+    this is a list rather than fixed fields.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    order: int = Field(ge=0)
+    label: str = ""
+    description: str
+
+
 class TemporalInfo(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -256,6 +274,7 @@ class RerankPlan(BaseModel):
     use_fields: list[str] = Field(
         default_factory=lambda: [
             "caption",
+            "recap",
             "ocr",
             "asr",
             "objects",
@@ -311,6 +330,7 @@ class ProcessedQuery(BaseModel):
     relations: list[Relation] = Field(default_factory=list)
     constraints: Constraints = Field(default_factory=Constraints)
     temporal: TemporalInfo = Field(default_factory=TemporalInfo)
+    events: list[EventStep] = Field(default_factory=list)
     retrieval_plan: RetrievalPlan
     ambiguity: AmbiguityInfo = Field(default_factory=AmbiguityInfo)
     meta: Meta = Field(default_factory=Meta)
@@ -363,6 +383,7 @@ class T2Analysis(BaseModel):
     relations: list[Relation] = Field(default_factory=list)
     constraints: Constraints = Field(default_factory=Constraints)
     temporal: TemporalInfo = Field(default_factory=TemporalInfo)
+    events: list[EventStep] = Field(default_factory=list)
     ambiguity: AmbiguityInfo = Field(default_factory=AmbiguityInfo)
     ocr_queries: list[SearchQuery] = Field(default_factory=list)
     asr_queries: list[SearchQuery] = Field(default_factory=list)
@@ -839,13 +860,14 @@ SYSTEM_INSTRUCTION_T2 = """
 Bạn là Query Planner cho hệ thống video retrieval AIC.
 
 Nhiệm vụ:
-1. Phân loại task: KIS, AVS, VQA, KISC.
+1. Phân loại task: KIS, AVS, VQA, KISC, TRAKE.
 2. Chuẩn hóa và dịch query sang tiếng Anh tự nhiên.
 3. Trích entity, relation, hard/soft/negative constraint.
 4. Phát hiện temporal logic: single moment, ordered events, before/current/after.
-5. Chỉ tạo OCR/ASR/caption query khi thật sự cần.
-6. Không bịa thêm chi tiết không có trong query.
-7. Trả về đúng JSON schema, không markdown.
+5. Nếu TRAKE, trích ra danh sách events theo đúng thứ tự (id, order, label, description).
+6. Chỉ tạo OCR/ASR/caption query khi thật sự cần.
+7. Không bịa thêm chi tiết không có trong query.
+8. Trả về đúng JSON schema, không markdown.
 """.strip()
 
 
@@ -863,18 +885,38 @@ HISTORY_JSON: {json.dumps(history_payload, ensure_ascii=False)}
 
 Quy tắc task, áp dụng theo thứ tự:
 1. VQA: query là câu hỏi cần trả lời từ video.
-2. KISC: chỉ khi query phải dùng history để hiểu các từ như
+2. TRAKE: query mô tả một CHUỖI nhiều khoảnh khắc/sự kiện có thứ tự bên trong
+   cùng một video (ví dụ các bước của một động tác thể thao, một quy trình
+   nhiều giai đoạn) và yêu cầu xác định một khung hình riêng cho MỖI bước —
+   khác AVS (không phải tìm nhiều cảnh/video riêng biệt) và khác KIS thông
+   thường (không chỉ 1 khoảnh khắc). Tín hiệu: liệt kê đánh số (1)(2)(3),
+   "giai đoạn", "bước", "chuỗi khoảnh khắc", "trình tự", hoặc nhiều mốc nối
+   bằng "rồi", "sau đó", "tiếp theo", "cuối cùng".
+3. KISC: chỉ khi query phải dùng history để hiểu các từ như
    "người đó", "cái đó", "nó", "that one".
-3. AVS: chỉ khi người dùng yêu cầu nhiều hoặc toàn bộ cảnh, với tín hiệu rõ
+4. AVS: chỉ khi người dùng yêu cầu nhiều hoặc toàn bộ cảnh, với tín hiệu rõ
    như "tất cả", "mọi", "các cảnh", "những cảnh", "liệt kê",
    "all scenes" hoặc "every occurrence".
-4. KIS: mặc định cho một mô tả cảnh/khoảnh khắc cụ thể.
+5. KIS: mặc định cho một mô tả cảnh/khoảnh khắc cụ thể.
 - Một người đang walking/running/riding vẫn là KIS, không phải AVS.
 
 Ví dụ:
 - "người đàn ông mặc áo đỏ đi xe đạp vào ban đêm" -> KIS
 - "tìm tất cả cảnh người đàn ông đi xe đạp" -> AVS
 - "người đàn ông đang làm gì?" -> VQA
+- "tìm 4 khoảnh khắc chính khi vận động viên nhảy cao: (1) giậm nhảy,
+   (2) bay qua xà, (3) tiếp đất, (4) đứng dậy" -> TRAKE, events =
+   [{id:"e1",order:1,label:"giậm nhảy",description:"athlete's take-off foot leaves the ground"},
+    {id:"e2",order:2,label:"bay qua xà",description:"athlete's hip is at its highest point over the bar"},
+    {id:"e3",order:3,label:"tiếp đất",description:"athlete's back first touches the landing mat"},
+    {id:"e4",order:4,label:"đứng dậy",description:"athlete stands up after landing"}]
+
+Quy tắc events (chỉ điền khi task = TRAKE, để rỗng ở mọi task khác):
+- Mỗi phần tử: id (e1, e2, ...), order (1, 2, 3, ... theo đúng thứ tự xảy ra),
+  label (tên ngắn tiếng Việt của bước, nếu query có nêu), description (mô tả
+  tiếng Anh ngắn, giàu tín hiệu thị giác riêng cho đúng khoảnh khắc đó — không
+  lặp lại mô tả của bước khác).
+- Phải có ít nhất 2 events khi task = TRAKE.
 
 Quy tắc query và language:
 - query.original và query.normalized phải giữ đúng QUERY_JSON.
@@ -982,6 +1024,24 @@ _CONTEXT_PATTERNS = (
     r"\bthe previous scene\b",
 )
 
+_TRAKE_PATTERNS = (
+    r"\(\d+\)",
+    r"\bbước \d+\b",
+    r"\bgiai đoạn \d+\b",
+    r"\bkhoảnh khắc \d+\b",
+    r"\bevent \d+\b",
+    r"\bchuỗi (các )?(khoảnh khắc|sự kiện|hành động)\b",
+    r"\btrình tự\b",
+    r"\bcác giai đoạn\b",
+)
+
+_TRAKE_CONNECTORS = (
+    r"\brồi\b",
+    r"\bsau đó\b",
+    r"\btiếp theo\b",
+    r"\bcuối cùng\b",
+)
+
 
 def _normalize_task_type(
     query: str,
@@ -1000,10 +1060,19 @@ def _normalize_task_type(
     needs_context = any(
         re.search(pattern, normalized) for pattern in _CONTEXT_PATTERNS
     )
+    connector_hits = sum(
+        1 for pattern in _TRAKE_CONNECTORS if re.search(pattern, normalized)
+    )
+    is_trake = len(analysis.events) >= 2 or any(
+        re.search(pattern, normalized) for pattern in _TRAKE_PATTERNS
+    ) or connector_hits >= 2
 
     if is_vqa:
         expected = TaskType.VQA
         reason = "Query là câu hỏi cần trả lời từ video."
+    elif is_trake:
+        expected = TaskType.TRAKE
+        reason = "Query mô tả chuỗi nhiều khoảnh khắc/sự kiện có thứ tự."
     elif needs_context and has_history:
         expected = TaskType.KISC
         reason = "Query chứa tham chiếu cần lịch sử hội thoại."
@@ -1023,6 +1092,20 @@ def _normalize_task_type(
         analysis.task.type = expected
         analysis.task.reason = reason
         analysis.task.confidence = max(0.90, analysis.task.confidence)
+
+    if expected == TaskType.TRAKE and len(analysis.events) < 2:
+        # Gemini classified/matched TRAKE but didn't extract a usable event
+        # sequence -- retrieve_trake() requires >=2 events, so fail safe by
+        # downgrading to KIS rather than crashing downstream in T5.
+        logger.warning(
+            "TRAKE task nhưng chỉ có %d events hợp lệ -- downgrade về KIS.",
+            len(analysis.events),
+        )
+        analysis.task.type = TaskType.KIS
+        analysis.task.reason = (
+            "TRAKE thiếu events hợp lệ (Gemini không trích được đủ 2 bước), "
+            "fallback về KIS."
+        )
 
     return analysis
 
@@ -1266,6 +1349,16 @@ def _build_retrieval_plan(
     asr_enabled = bool(analysis.asr_queries)
     caption_enabled = bool(analysis.caption_queries)
 
+    # Recap/caption text usually carries the specific detail (counts, names,
+    # dialogue context) that a pure image embedding can't see, so it should
+    # out-rank the visual channel rather than be a weak 0.4x fallback --
+    # image search stays the secondary/confirming signal. VQA leans on this
+    # even harder since the answer itself typically lives in that detail.
+    if analysis.task_type == TaskType.VQA:
+        visual_weight, caption_weight = 0.6, 1.2
+    else:
+        visual_weight, caption_weight = 0.8, 1.0
+
     channels = {
         "visual": ChannelPlan(
             enabled=visual_enabled,
@@ -1273,7 +1366,7 @@ def _build_retrieval_plan(
             index="siglip",
             top_k_per_query=100,
             top_k=100,
-            weight=1.0,
+            weight=visual_weight,
         ),
         "ocr": ChannelPlan(
             enabled=ocr_enabled,
@@ -1297,7 +1390,7 @@ def _build_retrieval_plan(
             index="elasticsearch_caption",
             top_k_per_query=50,
             top_k=50 if caption_enabled else 0,
-            weight=0.4 if caption_enabled else 0.0,
+            weight=caption_weight if caption_enabled else 0.0,
         ),
     }
 
@@ -1312,7 +1405,7 @@ def _build_retrieval_plan(
         rerank=RerankPlan(
             enabled=True,
             method="metadata_vlm_or_llm",
-            use_fields=["caption", "ocr", "asr", "objects", "timestamp"],
+            use_fields=["caption", "recap", "ocr", "asr", "objects", "timestamp"],
             top_k=20,
         ),
     )
@@ -1386,6 +1479,7 @@ def build_processed_query(
         relations=analysis.relations,
         constraints=analysis.constraints,
         temporal=analysis.temporal,
+        events=analysis.events,
         retrieval_plan=retrieval_plan,
         ambiguity=analysis.ambiguity,
         meta=Meta(
@@ -1558,6 +1652,120 @@ def _validate_candidates(candidates: list[Candidate]) -> None:
             raise ValueError(f"Candidate #{index} thiếu score")
 
 
+def retrieve_trake(
+    processed: ProcessedQuery,
+    visual_search_fn: SearchFn,
+    *,
+    caption_search_fn: SearchFn | None = None,
+    top_k_per_event: int = 50,
+    rrf_k: int = 60,
+) -> dict[str, Any]:
+    """T5 variant for TaskType.TRAKE: locate the one target video, then align
+    exactly one semantic keyframe per event inside that video.
+
+    Unlike retrieve_and_fuse() (single flat ranked list of frame_ids across
+    channels/queries), TRAKE needs N separate frame_ids that are all inside
+    the SAME video and in event order -- so each event is searched
+    independently first, then:
+
+      Stage 1 (video selection): every event "votes" for the videos its own
+      top candidates belong to (summing each candidate's per-event RRF
+      contribution); the video with the highest total wins.
+      Stage 2 (alignment): for each event, keep its own best-scoring
+      candidate whose video_id matches the stage-1 winner.
+
+    IMPORTANT: visual_search_fn/caption_search_fn passed here must return
+    candidates that include "video_id" (e.g. src/inference.py's search()/
+    search_captions(), unlike es_store.py's raw (frame_id, score) BM25
+    tuples) -- candidates missing video_id can't vote in stage 1 and can
+    never be selected in stage 2.
+    """
+    if len(processed.events) < 2:
+        raise ValueError(
+            "retrieve_trake() cần ProcessedQuery.events có >= 2 phần tử "
+            f"(hiện có {len(processed.events)})"
+        )
+
+    channels: list[tuple[str, SearchFn, float]] = [("visual", visual_search_fn, 1.0)]
+    if caption_search_fn is not None:
+        channels.append(("caption", caption_search_fn, 0.6))
+
+    events_by_order = sorted(processed.events, key=lambda e: e.order)
+    per_event_hits: dict[str, list[Candidate]] = {}
+
+    for event in events_by_order:
+        merged: dict[str, Candidate] = {}
+        for channel_name, search_fn, weight in channels:
+            raw_results = search_fn(event.description, top_k_per_event)
+            hits = _normalize_candidates(raw_results)
+            _validate_candidates(hits)
+            for rank, candidate in enumerate(hits, start=1):
+                frame_id = str(candidate["frame_id"])
+                record = merged.setdefault(
+                    frame_id, {**candidate, "frame_id": frame_id, "fusion_score": 0.0}
+                )
+                record["fusion_score"] += weight / (rrf_k + rank)
+        per_event_hits[event.id] = sorted(
+            merged.values(), key=lambda item: item["fusion_score"], reverse=True
+        )
+
+    # Stage 1: each event casts one vote per distinct video_id it saw, weighted
+    # by that candidate's fusion_score -- avoids one event's deep candidate
+    # list drowning out another event's shallow-but-confident list.
+    video_scores: dict[str, float] = {}
+    for event in events_by_order:
+        seen_videos: set[str] = set()
+        for candidate in per_event_hits[event.id]:
+            video_id = candidate.get("video_id")
+            if not video_id or video_id in seen_videos:
+                continue
+            seen_videos.add(video_id)
+            video_scores[video_id] = video_scores.get(video_id, 0.0) + candidate["fusion_score"]
+
+    if not video_scores:
+        return {
+            "video_id": None,
+            "video_score": 0.0,
+            "events": [
+                {
+                    "event_id": event.id,
+                    "order": event.order,
+                    "label": event.label,
+                    "frame_id": None,
+                    "score": 0.0,
+                    "matched": False,
+                }
+                for event in events_by_order
+            ],
+        }
+
+    target_video, video_score = max(video_scores.items(), key=lambda item: item[1])
+
+    # Stage 2: best in-video candidate per event, in event order.
+    event_results = []
+    for event in events_by_order:
+        best = next(
+            (c for c in per_event_hits[event.id] if c.get("video_id") == target_video),
+            None,
+        )
+        event_results.append(
+            {
+                "event_id": event.id,
+                "order": event.order,
+                "label": event.label,
+                "frame_id": best["frame_id"] if best else None,
+                "score": best["fusion_score"] if best else 0.0,
+                "matched": best is not None,
+            }
+        )
+
+    return {
+        "video_id": target_video,
+        "video_score": video_score,
+        "events": event_results,
+    }
+
+
 def _rrf_fusion(
     ranked_lists: list[tuple[str, ChannelPlan, SearchQuery, list[Candidate]]],
     *,
@@ -1680,8 +1888,10 @@ def _weighted_sum_fusion(
 
 SYSTEM_INSTRUCTION_T6 = """
 Bạn là semantic judge cho video retrieval AIC 2026.
-Chấm candidate dựa trên caption, OCR, ASR, detected objects và timestamp được
-cung cấp. Không giả vờ đã nhìn thấy frame nếu input không chứa ảnh.
+Chấm candidate dựa trên caption, recap, OCR, ASR, detected objects và
+timestamp được cung cấp. recap thường chứa nhiều chi tiết/ngữ cảnh hơn caption
+(bao gồm cả continuity giữa các frame) nên ưu tiên recap khi 2 field mâu
+thuẫn nhau. Không giả vờ đã nhìn thấy frame nếu input không chứa ảnh.
 Trả về đúng JSON schema, không markdown.
 """.strip()
 
@@ -1782,6 +1992,7 @@ def _compact_candidate(
     aliases: dict[str, tuple[str, ...]] = {
         "timestamp": ("timestamp", "timestamp_sec", "timestamp_seconds"),
         "caption": ("caption",),
+        "recap": ("recap",),
         "ocr": ("ocr", "ocr_text"),
         "asr": ("asr", "asr_text"),
         "objects": ("objects",),
@@ -1863,9 +2074,13 @@ class QueryPipeline:
         phase_latency["T2_analyze"] = _elapsed_ms(phase_started)
 
         expansions: list[T3ExpandedItem] = []
-        should_expand = not skip_expansion and not (
-            analysis.ambiguity.ambiguous
-            and analysis.ambiguity.clarification_needed
+        should_expand = (
+            not skip_expansion
+            and analysis.task_type != TaskType.TRAKE
+            and not (
+                analysis.ambiguity.ambiguous
+                and analysis.ambiguity.clarification_needed
+            )
         )
 
         if should_expand:
@@ -1924,6 +2139,21 @@ class QueryPipeline:
             final_top_k=final_top_k,
         )
 
+    def retrieve_trake(
+        self,
+        processed: ProcessedQuery,
+        visual_search_fn: SearchFn,
+        *,
+        caption_search_fn: SearchFn | None = None,
+        top_k_per_event: int = 50,
+    ) -> dict[str, Any]:
+        return retrieve_trake(
+            processed,
+            visual_search_fn,
+            caption_search_fn=caption_search_fn,
+            top_k_per_event=top_k_per_event,
+        )
+
     def rerank(
         self,
         processed: ProcessedQuery,
@@ -1966,6 +2196,21 @@ class QueryPipeline:
                 "processed_query": processed,
                 "clarification": processed.clarification_needed,
                 "results": [],
+                "trake_result": None,
+            }
+
+        if processed.task_type == TaskType.TRAKE:
+            trake_result = self.retrieve_trake(
+                processed,
+                visual_search_fn,
+                caption_search_fn=caption_search_fn,
+                top_k_per_event=final_top_k,
+            )
+            return {
+                "processed_query": processed,
+                "clarification": None,
+                "results": [],
+                "trake_result": trake_result,
             }
 
         candidates = self.retrieve(
@@ -1999,6 +2244,7 @@ class QueryPipeline:
             "processed_query": processed,
             "clarification": None,
             "results": candidates[:final_top_k],
+            "trake_result": None,
         }
 
     def close(self) -> None:
@@ -2014,6 +2260,7 @@ __all__ = [
     "ChannelPlan",
     "Constraints",
     "Entity",
+    "EventStep",
     "FusionPlan",
     "GeminiClient",
     "LanguageInfo",
@@ -2041,4 +2288,5 @@ __all__ = [
     "preprocess",
     "rerank_candidates",
     "retrieve_and_fuse",
+    "retrieve_trake",
 ]
